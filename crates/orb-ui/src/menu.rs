@@ -1212,6 +1212,10 @@ impl App {
                             }
                         });
                         ui.menu_button("Options", |ui| {
+                            if item(ui, "MIDI Controller...", None) {
+                                self.midi.open = true;
+                            }
+                            ui.separator();
                             let mut v = self.panel.vintage;
                             if ui.checkbox(&mut v, "Vintage ReBirth Synth Sound").clicked() {
                                 cmd = Some(Cmd::ToggleVintage);

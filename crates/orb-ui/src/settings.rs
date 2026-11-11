@@ -29,6 +29,8 @@ pub const MAX_RECENT: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
+    /// MIDI port, pickup preference and controller assignments (separate from .rbs songs).
+    pub midi: crate::midi::Config,
     /// The original's preference "Play Mod Startup Sound" (on by default: the preferences'
     /// constructor `sub_41CAA4` sets it, 0x41CB13): a mod change plays the mod's startup
     /// sound. Stored as the bool `startup_sound`.
@@ -56,6 +58,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            midi: crate::midi::Config::default(),
             startup_sound: true,
             songs_dir: None,
             mods_dir: None,
@@ -124,6 +127,7 @@ struct Stored<'a> {
     // a table, so last
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     preferred_mods: BTreeMap<&'a str, &'a str>,
+    midi: &'a crate::midi::Config,
 }
 
 /// The path when TOML can hold it (valid UTF-8). A lossy string would name another folder, so
@@ -161,6 +165,10 @@ impl Settings {
         };
         if let Some(b) = table.get("startup_sound").and_then(|v| v.as_bool()) {
             s.startup_sound = b;
+        }
+        if let Some(v) = table.get("midi") {
+            s.midi = v.clone().try_into().unwrap_or_default();
+            s.midi.sanitize();
         }
         s.songs_dir = table.get("songs_dir").and_then(path_of);
         s.mods_dir = table.get("mods_dir").and_then(path_of);
@@ -207,6 +215,7 @@ impl Settings {
             return Ok(());
         };
         let text = toml::to_string(&Stored {
+            midi: &self.midi,
             songs_dir: self.songs_dir.as_deref().and_then(storable),
             mods_dir: self.mods_dir.as_deref().and_then(storable),
             startup_sound: self.startup_sound,

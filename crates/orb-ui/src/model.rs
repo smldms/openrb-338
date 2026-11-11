@@ -73,7 +73,6 @@ impl Default for Transport {
         }
     }
 }
-
 impl Transport {
     pub fn tempo_step(&mut self, d: i32) {
         self.tempo = (self.tempo + d * 1000).clamp(20_000, 500_000);
@@ -505,6 +504,18 @@ impl Panel {
 
     pub fn fader(&self, id: &str) -> i32 {
         self.faders.get(id).copied().unwrap_or(0)
+    }
+
+    /// Changes an effect's numeric selector through MIDI using the panel's ordinary event.
+    pub fn set_midi_number(&mut self, id: &str, value: u8) {
+        let v = match id {
+            "delay.steps" => 1 + i32::from(value) * 31 / 127,
+            "pcf.pattern" => i32::from(value) * 54 / 127,
+            _ => return,
+        };
+        if self.numbers.insert(id.into(), v) != Some(v) {
+            self.set_event(id, v);
+        }
     }
 
     pub fn set_fader(&mut self, id: &str, p: i32) {

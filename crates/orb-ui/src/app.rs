@@ -123,6 +123,8 @@ pub struct App {
     pub samples: Option<Arc<SampleSet>>,
     /// The folders of the file browser (task-046).
     pub settings: Settings,
+    /// MIDI input and learning; the audio engine still receives ordinary panel events.
+    pub midi: crate::midi::Midi,
     /// The open file browser, if any (`open_browser`).
     browser: Option<Browser>,
     /// The open song: its file, its mod, whether it has unsaved changes (task-047).
@@ -211,6 +213,7 @@ impl App {
             link: None,
             samples: None,
             settings: Settings::default(),
+            midi: crate::midi::Midi::default(),
             browser: None,
             doc: Document::new(),
             settled: false,
@@ -583,6 +586,7 @@ impl App {
     /// Draws the whole panel in the free area of `ui` and handles the input.
     pub fn show(&mut self, ui: &mut Ui) {
         self.check_audio();
+        self.midi_tick(ui.ctx());
         // The theme is always dark (task-127): the colors of the windows assume it. Set on
         // every frame, so a system theme that changes at run time cannot switch it back.
         if ui.ctx().options(|o| o.theme_preference) != egui::ThemePreference::Dark {
@@ -692,6 +696,7 @@ impl App {
         self.about_ui(&ctx);
         self.key_help_ui(&ctx);
         self.mod_info_ui(&ctx);
+        self.midi_ui(&ctx);
         self.poll_export(&ctx);
         self.update_title(&ctx);
         self.close_if_allowed(&ctx);
