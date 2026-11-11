@@ -14,6 +14,8 @@ use crate::behavior;
 use crate::layout;
 use crate::model::Panel;
 
+pub mod preset;
+
 #[cfg(windows)]
 mod winmm;
 #[cfg(windows)]
@@ -287,6 +289,7 @@ pub struct Midi {
     last: Option<Cc>,
     error: Option<String>,
     dropped_seen: usize,
+    notice: Option<String>,
 }
 
 impl Midi {
@@ -389,11 +392,25 @@ impl App {
         let mut changed = false;
         let mut reconnect = false;
         let mut remove = None;
+        let mut import = false;
+        let mut export = false;
         egui::Window::new("MIDI Controller")
             .open(&mut open)
             .default_width(620.0)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.label("UC-33e / MIDI CC control - Windows");
+                ui.horizontal(|ui| {
+                    import = ui.button("Import routing...").clicked();
+                    export = ui.button("Export routing...").clicked();
+                });
+                ui.small(
+                    "Portable file: assignments + soft takeover. Import replaces assignments.",
+                );
+                ui.small("Choose the MIDI input locally on each computer.");
+                if let Some(notice) = &self.midi.notice {
+                    ui.colored_label(egui::Color32::LIGHT_GREEN, notice);
+                }
                 if self.midi.ports.is_empty() && self.midi.error.is_none() {
                     match backend::ports() {
                         Ok(p) => self.midi.ports = p,
@@ -528,6 +545,65 @@ impl App {
         }
         if changed {
             self.save_midi();
+        }
+        if import {
+            self.import_midi_routing();
+            ctx.request_repaint();
+        }
+        if export {
+            self.export_midi_routing();
+            ctx.request_repaint();
+        }
+    }
+
+    fn import_midi_routing(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import OpenRB MIDI routing")
+            .add_filter("OpenRB MIDI routing", &["toml"])
+            .set_directory(crate::settings::documents_dir())
+            .pick_file()
+        else {
+            return;
+        };
+        self.midi.notice = None;
+        let result =
+            preset::RoutingPreset::read(&path).and_then(|p| p.apply(&mut self.settings.midi));
+        match result {
+            Ok(count) => {
+                self.midi.router.reset();
+                self.midi.learning = None;
+                self.midi.error = None;
+                match self.settings.save() {
+                    Ok(()) => self.midi.notice = Some(format!("Imported {count} assignments.")),
+                    Err(e) => {
+                        self.midi.error = Some(format!("Imported, but cannot save settings: {e}"))
+                    }
+                }
+            }
+            Err(e) => self.midi.error = Some(e),
+        }
+    }
+
+    fn export_midi_routing(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export OpenRB MIDI routing")
+            .add_filter("OpenRB MIDI routing", &["toml"])
+            .set_directory(crate::settings::documents_dir())
+            .set_file_name("UC33-OpenRB-routing.toml")
+            .save_file()
+        else {
+            return;
+        };
+        self.midi.notice = None;
+        match preset::RoutingPreset::from_config(&self.settings.midi).write(&path) {
+            Ok(()) => {
+                self.midi.error = None;
+                self.midi.notice = Some(format!(
+                    "Exported {} assignments.",
+                    self.settings.midi.bindings.len()
+                ));
+            }
+            Err(e) => self.midi.error = Some(e),
         }
     }
 }

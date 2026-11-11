@@ -625,6 +625,28 @@ impl Link {
             data: data.to_vec(),
         };
         match e {
+            Event::PatternData {
+                row,
+                pattern,
+                bytes,
+            } => {
+                if *row >= 4 || *pattern >= 32 {
+                    return vec![];
+                }
+                let (_, plen, _) = layout(*row);
+                if bytes.len() != plen {
+                    return vec![];
+                }
+                let at = plen * usize::from(*pattern);
+                let Some(target) = self.patterns[*row].get_mut(at..at + plen) else {
+                    return vec![];
+                };
+                target.copy_from_slice(bytes);
+                let mut data = vec![*pattern];
+                data.extend_from_slice(bytes);
+                let d = ROW_DEVICES[*row];
+                vec![dev(d, header_sub(d) + 2, &data)]
+            }
             Event::Press { id } => match id.as_str() {
                 "transport.play" => vec![Msg::Global { id: 1, value: 1 }],
                 "transport.stop" => vec![Msg::Global { id: 1, value: 0 }],

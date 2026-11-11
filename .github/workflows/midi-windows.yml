@@ -28,7 +28,7 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
-        run: cargo test --locked -p orb-ui --test midi --test settings --test wired --test repaint
+        run: cargo test --locked -p orb-ui --test generator --test midi_preset --test midi --test settings --test wired --test repaint
       - name: Audio callback allocation guard
         run: cargo test --locked -p orb-player --test no_alloc
       - name: Portable Windows build
@@ -40,6 +40,7 @@ jobs:
           Copy-Item target/release/OpenRB-338.exe midi-preview/
           Copy-Item LICENSE midi-preview/
           Copy-Item docs/midi-controller.md midi-preview/README-MIDI.md
+          Copy-Item docs/pattern-generator.md midi-preview/README-RANDOM.md
       - uses: actions/upload-artifact@v4
         with:
           name: OpenRB-338-UC33-MIDI-Windows-x64

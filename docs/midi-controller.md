@@ -56,6 +56,11 @@ reserved for a later change.
 
 ## Verification
 
+Use **Export routing...** to back up all CC/channel assignments and soft takeover in a portable
+`.toml` file. **Import routing...** validates the file and replaces the current assignments.
+Choose the MIDI input on each computer: the port and enable state stay local. Invalid files
+leave your current routing intact. The controls remain in the existing MIDI Controller window.
+
 `cargo test -p orb-ui --test midi` checks CC decoding, channel filtering, full parameter
 ranges, pickup/re-arming, button edges, selectors, mapping replacement, persistence and
 delivery through the real player. The Windows preview also runs settings, wiring, repaint and

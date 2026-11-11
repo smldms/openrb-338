@@ -21,6 +21,11 @@ and Windows.
 
 ## Features
 
+- **Musical Random:** RND on each machine, key/scale-guided TB phrases, linked TB call/response,
+  structured TR grooves and Undo Random. Open **Options > Pattern Generator...**.
+  See the [pattern generator guide](docs/pattern-generator.md).
+- **Portable MIDI routing:** import/export learned assignments and soft takeover as `.toml`
+  files from **Options > MIDI Controller...**.
 - **Windows MIDI controller input:** MIDI Learn, saved CC/channel assignments and soft takeover
   for the two 303s, both drum machines, mixer and existing effects. Open
   **Options > MIDI Controller...**. See the [UC-33e setup guide](docs/midi-controller.md).

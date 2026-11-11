@@ -43,6 +43,12 @@ pub enum Event {
     },
     /// The Clear button emptied a 303 pattern (sent whole, msg 41 sub 44).
     Clear303 { synth: usize, pattern: u8 },
+    /// A generated/restored whole pattern, with an explicit destination (including offscreen).
+    PatternData {
+        row: usize,
+        pattern: u8,
+        bytes: Vec<u8>,
+    },
 }
 
 /// The transport (ticks, 768 per bar).
@@ -504,6 +510,92 @@ impl Panel {
 
     pub fn fader(&self, id: &str) -> i32 {
         self.faders.get(id).copied().unwrap_or(0)
+    }
+
+    /// Changes the selected pattern's length, just like its arrows.
+    pub fn set_pattern_length(&mut self, row: usize, length: u8) {
+        if row >= 4 {
+            return;
+        }
+        let p = self.rows[row].pattern as usize;
+        let length = length.clamp(1, 16);
+        if self.rows[row].len[p] != length {
+            self.rows[row].len[p] = length;
+            self.set_event(&format!("pattern{}.steps", row + 1), i32::from(length));
+        }
+    }
+
+    /// A snapshot of the selected pattern in the engine's wire format.
+    pub fn pattern_bytes(&self, row: usize) -> Vec<u8> {
+        if row >= 4 {
+            return Vec::new();
+        }
+        let pattern = self.rows[row].pattern as usize;
+        let mut bytes = vec![
+            u8::from(self.rows[row].shuffle[pattern]),
+            self.rows[row].len[pattern],
+        ];
+        for step in 0..16 {
+            if row < 2 {
+                let s = self.synth[row].patterns[pattern][step];
+                bytes.extend_from_slice(&[
+                    s.note,
+                    u8::from(s.slide),
+                    u8::from(s.accent),
+                    u8::from(s.up),
+                    u8::from(s.down),
+                    u8::from(s.rest),
+                ]);
+            } else {
+                for instrument in 0..12 {
+                    bytes.push(if row == 2 {
+                        u8::from(self.steps808[instrument][step])
+                    } else {
+                        self.steps909[instrument][step]
+                    });
+                }
+            }
+        }
+        bytes
+    }
+
+    /// Replaces exactly one pattern and sends it atomically through the normal player route.
+    pub fn replace_pattern(&mut self, row: usize, pattern: u8, bytes: Vec<u8>) -> bool {
+        let size = if row < 2 { 98 } else { 194 };
+        if row >= 4 || pattern >= 32 || bytes.len() != size || !(1..=16).contains(&bytes[1]) {
+            return false;
+        }
+        let p = pattern as usize;
+        self.rows[row].len[p] = bytes[1];
+        self.rows[row].shuffle[p] = bytes[0] != 0;
+        for step in 0..16 {
+            if row < 2 {
+                let b = &bytes[2 + step * 6..8 + step * 6];
+                self.synth[row].patterns[p][step] = Step303 {
+                    note: b[0],
+                    slide: b[1] != 0,
+                    accent: b[2] != 0,
+                    up: b[3] != 0,
+                    down: b[4] != 0,
+                    rest: b[5] != 0,
+                };
+            } else if self.rows[row].pattern == pattern {
+                for instrument in 0..12 {
+                    let v = bytes[2 + step * 12 + instrument];
+                    if row == 2 {
+                        self.steps808[instrument][step] = v != 0;
+                    } else {
+                        self.steps909[instrument][step] = v;
+                    }
+                }
+            }
+        }
+        self.emit(Event::PatternData {
+            row,
+            pattern,
+            bytes,
+        });
+        true
     }
 
     /// Changes an effect's numeric selector through MIDI using the panel's ordinary event.
