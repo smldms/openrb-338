@@ -483,6 +483,7 @@ impl App {
         // (0x425FAB for a 1.x song, 0x426400 for an RBS song): the old song was closed first
         // (the unsaved prompt is the close's), so this song is its mod's only user
         self.settle(path, opened.source, opened.facts_1x, mod_name, kit);
+        self.generator.clear_undo();
     }
 
     /// Whether the current song's mod has a `Demo.rbs` (the Mods menu's "Demo Song"): never for
@@ -630,6 +631,7 @@ impl App {
     /// Replaces the open song with the start state (`Link::load_new` stops the playing song).
     pub fn new_now(&mut self) {
         self.fresh();
+        self.generator.clear_undo();
     }
 
     /// `sub_426C67` after a song's mod was opened by its only user (word +1088 is 1,
@@ -1212,6 +1214,13 @@ impl App {
                             }
                         });
                         ui.menu_button("Options", |ui| {
+                            if item(ui, "Pattern Generator...", None) {
+                                self.generator.open = true;
+                            }
+                            if item(ui, "MIDI Controller...", None) {
+                                self.midi.open = true;
+                            }
+                            ui.separator();
                             let mut v = self.panel.vintage;
                             if ui.checkbox(&mut v, "Vintage ReBirth Synth Sound").clicked() {
                                 cmd = Some(Cmd::ToggleVintage);

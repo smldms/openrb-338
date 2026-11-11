@@ -1,0 +1,49 @@
+name: MIDI Windows preview
+
+on:
+  push:
+    branches: [feat/uc33-midi-input]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: midi-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      - name: Install formatting toolchain
+        run: rustup toolchain install nightly-2026-10-18 --profile minimal --component rustfmt
+      - name: Format check (print any required patch)
+        shell: pwsh
+        run: |
+          cargo +nightly-2026-10-18 fmt --all
+          git diff --exit-code
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked -p orb-ui --test generator --test midi_preset --test midi --test settings --test wired --test repaint
+      - name: Audio callback allocation guard
+        run: cargo test --locked -p orb-player --test no_alloc
+      - name: Portable Windows build
+        run: cargo build --release --locked -p orb-ui
+      - name: Prepare preview
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path midi-preview
+          Copy-Item target/release/OpenRB-338.exe midi-preview/
+          Copy-Item LICENSE midi-preview/
+          Copy-Item docs/midi-controller.md midi-preview/README-MIDI.md
+          Copy-Item docs/pattern-generator.md midi-preview/README-RANDOM.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenRB-338-UC33-MIDI-Windows-x64
+          path: midi-preview/
+          if-no-files-found: error
+          retention-days: 30
