@@ -24,6 +24,9 @@ and Windows.
 - **Windows MIDI controller input:** MIDI Learn, saved CC/channel assignments and soft takeover
   for the two 303s, both drum machines, mixer and existing effects. Open
   **Options > MIDI Controller...**. See the [UC-33e setup guide](docs/midi-controller.md).
+  Download the Windows MIDI preview from
+  [MIDI Windows preview builds](https://github.com/smldms/openrb-338/actions/workflows/midi-windows.yml):
+  open a successful run, then download its **OpenRB-338-UC33-MIDI-Windows-x64** artifact.
 - **Sounds exactly like the original.** The audio engine was rebuilt from ReBirth 2.01 to the
   bit. A song's exported loop equals the original's "Export Loop as Audio File" byte for byte. This
   is tested on 1,268 songs of the song collection, 531 of them on 43 third-party mods, and on a
