@@ -116,6 +116,13 @@ impl App {
         Ok(())
     }
 
+    /// Rack actions apply the current settings immediately; Options opens the editor.
+    pub(crate) fn apply_arpeggiator_from_rack(&mut self, row: usize) {
+        if let Err(error) = self.apply_arpeggiator(row) {
+            self.fail(error);
+        }
+    }
+
     pub fn can_undo_arpeggiator(&self, row: usize) -> bool {
         if row >= 2 {
             return false;
@@ -168,10 +175,12 @@ impl App {
                 Color32::WHITE,
             );
             if response
-                .on_hover_text(format!("Open {name} arpeggiator: chord or pattern notes."))
+                .on_hover_text(format!(
+                    "Apply {name} arpeggio now. Configure it in Options > Arpeggiator."
+                ))
                 .clicked()
             {
-                self.open_arpeggiator(row);
+                self.apply_arpeggiator_from_rack(row);
                 ui.ctx().request_repaint();
             }
         }

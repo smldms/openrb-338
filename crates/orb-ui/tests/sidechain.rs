@@ -31,6 +31,7 @@ fn midi_learn_ch_level_reaches_zero_and_preserves_open_hat_level() {
         ..Config::default()
     };
     config.bindings.push(Binding {
+        input: 0,
         target: "tr909.ch_level".into(),
         channel: 1,
         controller: 74,
@@ -74,10 +75,32 @@ fn additional_mix_settings_round_trip_and_old_settings_default_to_bypass() {
     s.sidechain.enabled = true;
     s.sidechain.depth = [0, 80];
     s.sidechain.source = 1;
+    s.sidechain.instrument = 8;
     s.sidechain.release_ms = 270;
     s.closed_hat_level = Some(0);
     s.save().unwrap();
     assert_eq!(Settings::load_from(&file), s);
+}
+
+#[test]
+fn old_sidechain_settings_keep_the_kick_and_existing_depths() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ui.toml");
+    std::fs::write(
+        &file,
+        concat!(
+            "[sidechain]\nenabled=true\nsource=1\ndepth=[22,78]\n",
+            "release_ms=240\nbypass=[true,false]\n",
+        ),
+    )
+    .unwrap();
+    let settings = Settings::load_from(&file);
+    assert_eq!(settings.sidechain.instrument, 1);
+    assert_eq!(settings.sidechain.source, 1);
+    assert_eq!(settings.sidechain.depth, [22, 78]);
+    assert_eq!(settings.sidechain.bypass, [true, false]);
+    assert_eq!(settings.sidechain.engine_config().depth, [0, 78]);
+    assert_eq!(settings.sidechain.engine_config().instrument, 1);
 }
 
 #[test]
@@ -117,6 +140,7 @@ fn ch_pickup_does_not_rearm_on_a_stale_snapshot_between_audio_callbacks() {
         ..Config::default()
     };
     config.bindings.push(Binding {
+        input: 0,
         target: "tr909.ch_level".into(),
         channel: 1,
         controller: 74,

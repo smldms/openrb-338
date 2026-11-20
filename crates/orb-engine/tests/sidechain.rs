@@ -161,3 +161,76 @@ fn independent_closed_hat_mutes_ch_without_touching_oh_or_other_909_voices() {
     e.frame.devices.channels[3].set_closed_hat_level(Some(100));
     assert!(audio(&mut e, 20).iter().any(|&v| v.unsigned_abs() > 1));
 }
+
+#[test]
+fn selected_closed_hat_triggers_ducking_while_the_kick_does_not() {
+    for tr909 in [false, true] {
+        let closed_hat = if tr909 { 8 } else { 11 };
+        for played in [1, closed_hat] {
+            let mut e = engine(played, tr909, true);
+            e.frame.sidechain.set_config(Config {
+                enabled: true,
+                source: if tr909 { Source::Tr909 } else { Source::Tr808 },
+                instrument: closed_hat as u8,
+                ..Config::default()
+            });
+            let mut seen = false;
+            for _ in 0..12 {
+                audio(&mut e, 1);
+                seen |= e.frame.sidechain.reduction()[0] > 0;
+            }
+            assert_eq!(seen, played == closed_hat);
+        }
+    }
+}
+
+#[test]
+fn voice_selection_tracks_history_without_missing_the_first_selected_hit() {
+    let mut counts = [[0; 12]; 2];
+    counts[1][8] = 12;
+    let mut d = Ducker::default();
+    assert_eq!(d.gains_for_voices(counts, [true; 2]), [[1.0; 64]; 2]);
+    d.set_config(Config {
+        enabled: true,
+        source: Source::Tr909,
+        instrument: 8,
+        ..Config::default()
+    });
+    assert_eq!(d.gains_for_voices(counts, [true; 2]), [[1.0; 64]; 2]);
+    counts[0][8] += 1;
+    assert_eq!(d.gains_for_voices(counts, [true; 2]), [[1.0; 64]; 2]);
+    counts[1][8] += 1;
+    assert!(
+        d.gains_for_voices(counts, [true; 2])[0]
+            .iter()
+            .any(|&g| g < 1.0)
+    );
+
+    let mut fresh = Ducker::default();
+    fresh.set_config(d.config());
+    let mut first = [[0; 12]; 2];
+    first[1][8] = 1;
+    assert!(
+        fresh.gains_for_voices(first, [true; 2])[0]
+            .iter()
+            .any(|&g| g < 1.0)
+    );
+    assert_eq!(
+        Config {
+            instrument: 0,
+            ..Config::default()
+        }
+        .sanitized()
+        .instrument,
+        1
+    );
+    assert_eq!(
+        Config {
+            instrument: 255,
+            ..Config::default()
+        }
+        .sanitized()
+        .instrument,
+        11
+    );
+}

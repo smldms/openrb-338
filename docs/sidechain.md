@@ -1,13 +1,15 @@
-# Kick Sidechain and independent 909 Closed Hat level
+# TR Sidechain and independent 909 Closed Hat level
 
 Click **SC** beside the transport's Loop button, or choose **Options > Kick Sidechain...**.
-Enable kick ducking, choose the 808 kick, the 909 kick, or both, and set the depth separately
+Enable ducking, choose the 808, the 909, or both, select a voice (BD, SD, CH, OH...) and set the depth separately
 for TB-303 A and B. Depth 0 leaves that TB unchanged; 100 fully ducks it at the deepest point.
 Return sets the recovery time (20–1000 ms). Start around 50–65% with 150–220 ms return.
 The gain-reduction bars show what the audio processor is doing.
 
-The trigger follows actual kick notes, including shuffled steps and 909 flams. Snares, hats
-and cymbals do not trigger it. Muted drum channels and zero kick levels do not trigger it.
+The trigger follows actual notes of the selected voice, including shuffled steps and 909
+flams. Other voices do not trigger it. Voice level does not change its logical triggers;
+muting the whole drum machine or setting its mixer level to zero disables its trigger.
+Old settings default to BD. Changing voice does not replay a hit from earlier playback.
 A short smoothed attack, a 10 ms hold and a smooth recovery leave space for the kick without
 hard gain jumps. Each TB is ducked after its inserts and before its dry mix and new delay sends.
 Existing delay tails continue naturally. Shared master compression can still react to the

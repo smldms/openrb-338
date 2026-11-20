@@ -427,6 +427,13 @@ impl App {
     }
 
     fn open_now_inner(&mut self, path: &Path) {
+        if path
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("orb338"))
+        {
+            self.studio_open(path, &self.studio.context.clone());
+            return;
+        }
         if self.link.is_none() {
             self.fail("There is no player to open the song in.");
             return;
@@ -564,6 +571,8 @@ impl App {
             self.mod_opened();
         }
         self.settled = true;
+        self.settlement = self.settlement.wrapping_add(1);
+        self.reset_studio();
         self.doc = Document {
             source,
             facts_1x,
@@ -673,6 +682,16 @@ impl App {
 
     /// Save: to the song's file, or Save As for a song that has none.
     pub fn save(&mut self) {
+        if self.studio.content
+            && self
+                .doc
+                .path
+                .as_ref()
+                .is_none_or(|p| p.extension().is_none_or(|e| e != "orb338"))
+        {
+            self.open_browser(Mode::SaveSong);
+            return;
+        }
         match self.doc.path.clone() {
             Some(p) => self.save_to(&p),
             None => self.open_browser(Mode::SaveSong),
@@ -686,6 +705,14 @@ impl App {
     }
 
     fn save_to_inner(&mut self, path: &Path) {
+        if self.studio.content
+            || path
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("orb338"))
+        {
+            self.studio_save(path, &self.studio.context.clone());
+            return;
+        }
         let result = self.song_for_save().and_then(|song| {
             let bytes = song
                 .write()
@@ -764,11 +791,26 @@ impl App {
         let label = self.doc.name();
         let sidechain = self.settings.sidechain.engine_config();
         let closed_hat_level = self.settings.closed_hat_level;
+        let studio = self.studio.project(
+            Vec::new(),
+            self.settings.sidechain.clone(),
+            closed_hat_level,
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut r = Renderer::new(mods);
             r.sidechain = sidechain;
             r.closed_hat_level = closed_hat_level;
+            r.independent_hats = true;
+            if let Some(studio) = studio {
+                match studio.prepare() {
+                    Ok(prepared) => r.studio = Some(prepared),
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                }
+            }
             let result = r
                 .render_to_file(
                     &label,
@@ -951,10 +993,16 @@ impl App {
             use crate::model::Event;
             match e {
                 Event::Press { .. } => false,
-                Event::Set { id, .. } => !matches!(
-                    id.as_str(),
-                    "transport.position" | "transport.bar" | "transport.record" | "tr909.ch_level"
-                ),
+                Event::Set { id, .. } => {
+                    !id.starts_with("duck")
+                        && !matches!(
+                            id.as_str(),
+                            "transport.position"
+                                | "transport.bar"
+                                | "transport.record"
+                                | "tr909.ch_level"
+                        )
+                }
                 _ => true,
             }
         });
@@ -970,7 +1018,7 @@ impl App {
     // ---- the unsaved-changes prompt -----------------------------------------------------
 
     /// Does what the prompt guarded.
-    fn proceed(&mut self, then: Then) {
+    pub(crate) fn proceed(&mut self, then: Then) {
         match then {
             Then::Open(p) => self.open_now(&p),
             Then::Demo(p) => self.open_demo_now(&p),
@@ -1090,7 +1138,7 @@ impl App {
     /// The window's title: the song's name, marked when modified.
     pub fn update_title(&mut self, ctx: &Context) {
         let title = format!(
-            "OpenRB-338 - {}{}",
+            "ACID RECALL - {}{}",
             self.doc.name(),
             if self.doc.modified { " *" } else { "" }
         );
@@ -1141,84 +1189,97 @@ impl App {
                                 ui.close();
                             }
                         });
-                        ui.menu_button("Mods", |ui| {
-                            let (std_on, checked) = match &self.mod_list {
-                                Some(Ok(l)) => self.mod_checks(l),
-                                _ => self.mod_checks(&[]),
-                            };
-                            if ui.selectable_label(std_on, STANDARD).clicked() {
-                                cmd = Some(Cmd::UseKit(Kit::Standard));
-                                ui.close();
-                            }
-                            match &self.mod_list {
-                                None => {}
-                                Some(Ok(list)) => {
-                                    egui::ScrollArea::vertical()
-                                        .max_height(300.0)
-                                        .show(ui, |ui| {
-                                            for (i, e) in list.iter().enumerate() {
-                                                let on = checked == Some(i);
-                                                if !e.variants.is_empty() {
-                                                    // mods that share a name: a submenu of files
-                                                    let mut b =
+                        if !self.studio.modern {
+                            ui.menu_button("Mods", |ui| {
+                                let (std_on, checked) = match &self.mod_list {
+                                    Some(Ok(l)) => self.mod_checks(l),
+                                    _ => self.mod_checks(&[]),
+                                };
+                                if ui.selectable_label(std_on, STANDARD).clicked() {
+                                    cmd = Some(Cmd::UseKit(Kit::Standard));
+                                    ui.close();
+                                }
+                                match &self.mod_list {
+                                    None => {}
+                                    Some(Ok(list)) => {
+                                        egui::ScrollArea::vertical().max_height(300.0).show(
+                                            ui,
+                                            |ui| {
+                                                for (i, e) in list.iter().enumerate() {
+                                                    let on = checked == Some(i);
+                                                    if !e.variants.is_empty() {
+                                                        // mods that share a name: a submenu of
+                                                        // files
+                                                        let mut b =
                                                         egui::containers::menu::SubMenuButton::new(
                                                             &e.name,
                                                         );
-                                                    b.button = b.button.selected(on);
-                                                    let active = match &self.doc.kit {
-                                                        Kit::Mod(p) => Some(p),
-                                                        Kit::Standard => None,
-                                                    };
-                                                    let pref = self.preferred_variant(e);
-                                                    b.ui(ui, |ui| {
-                                                        for v in &e.variants {
-                                                            let mut t = v.label();
-                                                            if pref.is_some_and(|p| p == v) {
-                                                                t.push_str("  (preferred)");
+                                                        b.button = b.button.selected(on);
+                                                        let active = match &self.doc.kit {
+                                                            Kit::Mod(p) => Some(p),
+                                                            Kit::Standard => None,
+                                                        };
+                                                        let pref = self.preferred_variant(e);
+                                                        b.ui(ui, |ui| {
+                                                            for v in &e.variants {
+                                                                let mut t = v.label();
+                                                                if pref.is_some_and(|p| p == v) {
+                                                                    t.push_str("  (preferred)");
+                                                                }
+                                                                let me = active == Some(&v.path);
+                                                                if ui
+                                                                    .selectable_label(me, t)
+                                                                    .clicked()
+                                                                {
+                                                                    cmd = Some(Cmd::ChooseVariant(
+                                                                        v.path.clone(),
+                                                                    ));
+                                                                    ui.close();
+                                                                }
                                                             }
-                                                            let me = active == Some(&v.path);
-                                                            if ui.selectable_label(me, t).clicked()
-                                                            {
-                                                                cmd = Some(Cmd::ChooseVariant(
-                                                                    v.path.clone(),
-                                                                ));
-                                                                ui.close();
-                                                            }
-                                                        }
-                                                    });
-                                                    continue;
+                                                        });
+                                                        continue;
+                                                    }
+                                                    if ui.selectable_label(on, &e.name).clicked() {
+                                                        cmd = Some(Cmd::UseKit(Kit::Mod(
+                                                            e.path.clone(),
+                                                        )));
+                                                        ui.close();
+                                                    }
                                                 }
-                                                if ui.selectable_label(on, &e.name).clicked() {
-                                                    cmd =
-                                                        Some(Cmd::UseKit(Kit::Mod(e.path.clone())));
-                                                    ui.close();
-                                                }
-                                            }
-                                        });
+                                            },
+                                        );
+                                    }
+                                    Some(Err(e)) => {
+                                        ui.label(RichText::new(e).color(INK_DIM));
+                                    }
                                 }
-                                Some(Err(e)) => {
-                                    ui.label(RichText::new(e).color(INK_DIM));
+                                ui.separator();
+                                if item(ui, "Choose file...", None) {
+                                    cmd = Some(Cmd::ChooseModFile);
                                 }
-                            }
-                            ui.separator();
-                            if item(ui, "Choose file...", None) {
-                                cmd = Some(Cmd::ChooseModFile);
-                            }
-                            if item(ui, "Refresh List", None) {
-                                cmd = Some(Cmd::RefreshMods);
-                            }
-                            ui.separator();
-                            let has_demo = self.has_demo();
-                            let r = ui.add_enabled(has_demo, egui::Button::new("Demo Song"));
-                            if r.clicked() {
-                                cmd = Some(Cmd::DemoSong);
-                                ui.close();
-                            }
-                            if item(ui, "Info...", None) {
-                                cmd = Some(Cmd::ModInfo);
-                            }
-                        });
+                                if item(ui, "Refresh List", None) {
+                                    cmd = Some(Cmd::RefreshMods);
+                                }
+                                ui.separator();
+                                let has_demo = self.has_demo();
+                                let r = ui.add_enabled(has_demo, egui::Button::new("Demo Song"));
+                                if r.clicked() {
+                                    cmd = Some(Cmd::DemoSong);
+                                    ui.close();
+                                }
+                                if item(ui, "Info...", None) {
+                                    cmd = Some(Cmd::ModInfo);
+                                }
+                            });
+                        }
                         ui.menu_button("Options", |ui| {
+                            if item(ui, "Sampler / 64-bar sequencer...", None) {
+                                self.studio.sampler_open = true;
+                            }
+                            if item(ui, "SPACE / Convolution Reverb...", None) {
+                                self.studio.reverb_open = true;
+                            }
                             if item(ui, "Pattern Generator...", None) {
                                 self.generator.open = true;
                             }
@@ -1241,7 +1302,9 @@ impl App {
                                 ui.close();
                             }
                             let mut st = self.settings.startup_sound;
-                            if ui.checkbox(&mut st, "Play Mod Startup Sound").clicked() {
+                            if !self.studio.modern
+                                && ui.checkbox(&mut st, "Play Mod Startup Sound").clicked()
+                            {
                                 cmd = Some(Cmd::ToggleStartupSound);
                                 ui.close();
                             }
@@ -1287,7 +1350,7 @@ impl App {
 /// The items of the Help menu, in order.
 const HELP_ITEMS: &[(&str, Cmd)] = &[
     ("Keyboard Shortcuts...", Cmd::KeyHelp),
-    ("About OpenRB-338...", Cmd::About),
+    ("About ACID RECALL...", Cmd::About),
 ];
 
 /// A menu item with its shortcut; true when clicked (the menu closes).

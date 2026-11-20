@@ -80,6 +80,7 @@
 //! into a second triple buffer whenever they change), which is what a save of a recorded song
 //! writes.
 
+pub mod clock;
 pub mod output;
 
 use std::sync::Arc;
@@ -135,6 +136,16 @@ impl std::fmt::Display for LoadError {
 /// What the UI sends to the newest song (current, or pending: see the crate doc). Each variant
 /// names the engine message it stands for.
 pub enum Command {
+    /// Prepared Studio runtime, settings and assets. All large drops return through Garbage.
+    Studio(Box<orb_engine::studio::Studio>),
+    StudioClear,
+    StudioSettings(Box<orb_engine::studio::Settings>),
+    StudioWave {
+        lane: usize,
+        wave: Option<Box<orb_engine::studio::audio_file::Wave>>,
+    },
+    StudioReverb(Box<orb_engine::studio::convolution::Convolver>),
+    StudioAudition(usize),
     /// Independent closed-hat level; None preserves the legacy shared control.
     ClosedHatLevel(Option<u8>),
     /// Global optional kick ducking, applied to current and pending songs.
@@ -166,27 +177,48 @@ pub enum Command {
     /// [`Command::MixerGlobal`] ids 1 and 2, [`Command::MixerChannel`] fields 1..4). The pattern
     /// (controller 1) and the on/off switch (0) of a 303, 808 or 909 are latched by the device
     /// at the next bar line.
-    Param { device: Device, ctrl: u8, value: u8 },
+    Param {
+        device: Device,
+        ctrl: u8,
+        value: u8,
+    },
     /// The mixer's master level (msg 145 `{0,v}`), not a controller.
     Master(u8),
     /// A mixer channel's on/off (mute) switch (msg 147 `{c,0,v}`), not a controller.
-    ChannelEnabled { channel: u8, on: bool },
+    ChannelEnabled {
+        channel: u8,
+        on: bool,
+    },
     /// A device's whole data block (song msg 41, [`Song::device_payload`]): the parameters and
     /// the patterns. It goes into the pattern-mode copy, and live only in pattern mode (so in
     /// pattern mode it also resets the live parameters to the block's: a pattern edit goes as
     /// one of the pattern commands below).
-    DeviceData { device: Device, payload: Box<[u8]> },
+    DeviceData {
+        device: Device,
+        payload: Box<[u8]>,
+    },
     /// The panel's knob or switch message `{ctrl, v}` of a 303, 808, 909 or effect
     /// ([`Engine::device_param`]: 303 msg 41 sub 40, 808 57, 909 74, delay 84, dist 92,
     /// compressor 102, PCF 114). The same as [`Command::Param`] for the controllers slot 11
     /// takes, plus the device's one extra live byte. Ignored for the mixer.
-    DeviceParam { device: Device, ctrl: u8, value: u8 },
+    DeviceParam {
+        device: Device,
+        ctrl: u8,
+        value: u8,
+    },
     /// Mixer msg 145 `{id, v}` ([`Engine::mixer_global`]): 0 the master, 1 the compressor id,
     /// 2 the PCF id.
-    MixerGlobal { id: u8, value: u8 },
+    MixerGlobal {
+        id: u8,
+        value: u8,
+    },
     /// Mixer msg 147 `{c, k, v}` ([`Engine::mixer_channel`]): channel c's field k, 0 enabled,
     /// 1 level, 2 pan, 3 delay send, 4 dist.
-    MixerChannel { channel: u8, field: u8, value: u8 },
+    MixerChannel {
+        channel: u8,
+        field: u8,
+        value: u8,
+    },
     /// A pattern's shuffle flag (field 0) or length (1) ([`Engine::pattern_field`]: 303 sub 42,
     /// 808 59, 909 76).
     PatternField {
@@ -289,6 +321,10 @@ impl ModSwap {
 
 /// What the callback hands back to the UI thread to be dropped there.
 pub enum Garbage {
+    Studio(Box<orb_engine::studio::Studio>),
+    StudioSettings(Box<orb_engine::studio::Settings>),
+    StudioWave(Box<orb_engine::studio::audio_file::Wave>),
+    StudioReverb(Box<orb_engine::studio::convolution::Convolver>),
     Engine(Box<Engine>),
     Bytes(Box<[u8]>),
     Mod(Box<ModSwap>),
@@ -329,6 +365,9 @@ impl LiveBlock {
 /// What the UI reads back: the current song's state after the last engine call.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Snapshot {
+    /// Sampler stereo bus peaks after its global fader/insert, before the master fader.
+    pub sampler_meter: [u8; 2],
+    pub sampler_playheads: [Option<orb_engine::studio::sampler::Playhead>; 8],
     pub closed_hat_level: u8,
     /// Current TB gain reductions, in percent, from the optional sidechain processor.
     pub sidechain_reduction: [u8; 2],
@@ -398,6 +437,7 @@ pub struct Tracks {
 
 /// The UI side.
 pub struct Player {
+    midi_clock: Option<clock::Connection>,
     commands: rtrb::Producer<Command>,
     garbage: rtrb::Consumer<Garbage>,
     snapshot: triple_buffer::Output<Snapshot>,
@@ -408,6 +448,9 @@ pub struct Player {
 
 /// The callback side.
 pub struct Audio {
+    midi_clock: clock::AudioClock,
+    buffer_len: usize,
+    independent_hats: bool,
     closed_hat_level: Option<u8>,
     sidechain: orb_engine::sidechain::Config,
     current: Box<Engine>,
@@ -448,7 +491,11 @@ impl Player {
         let (gp, gc) = rtrb::RingBuffer::new(GARBAGE);
         let (si, so) = triple_buffer::triple_buffer(&Snapshot::default());
         let (ti, to) = triple_buffer::triple_buffer(&Tracks::default());
+        let (connection, midi_clock) = clock::bridge();
         let mut audio = Audio {
+            midi_clock,
+            buffer_len: CALL_FRAMES,
+            independent_hats: false,
             closed_hat_level: None,
             sidechain: orb_engine::sidechain::Config::default(),
             current,
@@ -469,6 +516,7 @@ impl Player {
         };
         audio.publish();
         let player = Player {
+            midi_clock: Some(connection),
             commands: cp,
             garbage: gc,
             snapshot: so,
@@ -482,6 +530,11 @@ impl Player {
     /// The process globals every song of this player shares.
     pub fn process(&self) -> &ProcessState {
         &self.process
+    }
+
+    /// Transfer the driver's endpoint once; it never owns or blocks the audio callback.
+    pub fn take_midi_clock(&mut self) -> Option<clock::Connection> {
+        self.midi_clock.take()
     }
 
     /// A song as the original makes it when a file is opened: the song constructor (msg 52),
@@ -539,6 +592,14 @@ impl Player {
     /// past it).
     pub fn send(&mut self, c: Command) -> Result<(), Command> {
         self.collect_garbage();
+        let settings = match &c {
+            Command::StudioSettings(s) => Some(&**s),
+            Command::Studio(s) => Some(&*s.settings),
+            _ => None,
+        };
+        if settings.is_some_and(|s| s.lanes.iter().any(|l| l.steps.len() != 1024)) {
+            return Err(c);
+        }
         if let Command::DeviceData { device, payload } = &c
             && payload.len() != device.data_len()
         {
@@ -580,6 +641,17 @@ impl Player {
 }
 
 impl Audio {
+    /// Configure before handing Audio to its callback; retained across song changes.
+    pub fn set_independent_hats(&mut self, independent: bool) {
+        self.independent_hats = independent;
+        self.current.frame.independent_hats = independent;
+        for channel in &mut self.current.frame.devices.channels[2..] {
+            channel.set_independent_hats(independent);
+        }
+        if let Some(pending) = &mut self.pending {
+            pending.frame.independent_hats = independent;
+        }
+    }
     /// Fills `out` (interleaved stereo int16 at 44.1 kHz, `out.len() / 2` frames) with the
     /// engine's output, running an engine call whenever the last one is used up.
     pub fn render_i16(&mut self, out: &mut [i16]) {
@@ -598,12 +670,24 @@ impl Audio {
     }
 
     fn pull(&mut self, frames: usize, mut put: impl FnMut(usize, i16, i16)) {
+        if self
+            .midi_clock
+            .shared
+            .mode
+            .load(std::sync::atomic::Ordering::Acquire)
+            != clock::OFF
+        {
+            self.midi_clock.begin_pull(
+                self.frames
+                    .saturating_sub((self.buffer_len - self.pos) as u64),
+            );
+        }
         let mut i = 0;
         while i < frames {
-            if self.pos == CALL_FRAMES {
+            if self.pos == self.buffer_len {
                 self.call();
             }
-            let n = (CALL_FRAMES - self.pos).min(frames - i);
+            let n = (self.buffer_len - self.pos).min(frames - i);
             for k in 0..n {
                 let s = 2 * (self.pos + k);
                 put(i + k, self.buf[s], self.buf[s + 1]);
@@ -621,8 +705,37 @@ impl Audio {
         }
         // a faulting call writes nothing (`Engine::fault`): silence rather than the last call
         self.buf.fill(0);
+        let mode = self
+            .midi_clock
+            .shared
+            .mode
+            .load(std::sync::atomic::Ordering::Acquire);
+        let count = if mode == clock::OFF { CALL_FRAMES } else { 64 };
+        let leaving_slave = self.midi_clock.was_slave() && mode != clock::SLAVE;
+        self.midi_clock.master(
+            self.frames,
+            count,
+            self.current.playing(),
+            self.current.frame.seq.globals.tempo,
+            self.current.frame.seq.tick_pos(),
+        );
+        if leaving_slave {
+            self.current.halt();
+            if let Some(studio) = &mut self.current.frame.studio {
+                studio.sampler.stop();
+            }
+        }
+        if mode == clock::SLAVE {
+            self.follow_clock();
+        }
         let faults = self.faults();
-        self.current.render(&mut self.buf[..], CALL_FRAMES);
+        self.current.render(&mut self.buf[..2 * count], count);
+        if self.garbage.slots() > 0
+            && let Some(studio) = &mut self.current.frame.studio
+            && let Some(old) = studio.retired()
+        {
+            self.throw(Garbage::StudioReverb(old));
+        }
         if self.faults() != faults {
             self.buf.fill(0);
         }
@@ -631,14 +744,86 @@ impl Audio {
             && let Some(p) = &self.preview
         {
             let audio = p.sample.audio();
-            self.preview_pos = mix_preview(&mut self.buf[..], audio, self.preview_pos);
+            self.preview_pos = mix_preview(&mut self.buf[..2 * count], audio, self.preview_pos);
             if self.preview_pos == audio.len() {
                 self.preview_on = false;
             }
         }
         self.pos = 0;
-        self.frames += CALL_FRAMES as u64;
+        self.buffer_len = count;
+        self.frames += count as u64;
         self.publish();
+    }
+
+    fn follow_clock(&mut self) {
+        use std::sync::atomic::Ordering;
+        if let Some(input) = self.midi_clock.shared.read() {
+            self.midi_clock.input = input;
+        }
+        let input = self.midi_clock.input;
+        let inhibited = self.midi_clock.shared.inhibit.load(Ordering::Acquire);
+        if !input.playing || inhibited {
+            if self.current.playing() {
+                self.current.halt();
+                if let Some(studio) = &mut self.current.frame.studio {
+                    studio.sampler.stop();
+                }
+            }
+            return;
+        }
+        let elapsed = self
+            .midi_clock
+            .shared
+            .now()
+            .saturating_sub(input.at)
+            .min(500_000_000);
+        let period = input.period.max(1);
+        let mut target = input.tick as f64 + elapsed as f64 * 8.0 / period as f64;
+        let g = &self.current.frame.seq.globals;
+        let loop_length = if g.loop_on != 0 && g.loop_end > g.loop_start {
+            let length = f64::from(g.loop_end - g.loop_start);
+            if target >= f64::from(g.loop_end) {
+                target =
+                    f64::from(g.loop_start) + (target - f64::from(g.loop_start)).rem_euclid(length);
+            }
+            Some(length)
+        } else {
+            None
+        };
+        let mut error = target - self.current.frame.seq.pos;
+        if let Some(length) = loop_length {
+            error = (error + length * 0.5).rem_euclid(length) - length * 0.5;
+        }
+        let offset = self
+            .midi_clock
+            .shared
+            .input_offset_ms
+            .load(Ordering::Acquire);
+        let offset_ticks = f64::from(offset.clamp(-500, 500)) * 1_000_000.0 * 8.0 / period as f64;
+        if self.midi_clock.generation != input.generation
+            || !self.current.playing()
+            || error.abs() > 96.0 + offset_ticks.abs()
+        {
+            if let Some(new) = self.pending.take() {
+                self.switch(new);
+            }
+            self.current.halt();
+            self.current.locate(target.max(0.0) as u32);
+            self.current.play();
+            self.midi_clock.generation = input.generation;
+            error = 0.0;
+        }
+        // A bounded phase-locked correction avoids seeking/retriggering on every clock pulse.
+        // Apply calibration to phase only. Start/locate and discontinuity detection retain
+        // the master's true position, so an offset cannot skip the first downbeat or cause seeks.
+        error -= offset_ticks;
+        if let Some(length) = loop_length {
+            error = (error + length * 0.5).rem_euclid(length) - length * 0.5;
+        }
+        let bpm = 2_500_000_000_000.0 / period as f64;
+        let correction = (error / 192.0 * 0.5).clamp(-0.05, 0.05);
+        self.current
+            .set_tempo((bpm * (1.0 + correction)).clamp(20_000.0, 400_000.0) as u32);
     }
 
     fn faults(&self) -> u64 {
@@ -663,6 +848,51 @@ impl Audio {
 
     fn apply(&mut self, c: Command) {
         match c {
+            Command::StudioClear => {
+                if let Some(old) = self.current.frame.studio.take() {
+                    self.throw(Garbage::Studio(old));
+                }
+            }
+            Command::Studio(studio) => {
+                if let Some(old) = self.current.frame.studio.replace(studio) {
+                    self.throw(Garbage::Studio(old));
+                }
+            }
+            Command::StudioSettings(settings) => {
+                let old = if let Some(studio) = &mut self.current.frame.studio {
+                    studio.replace_settings(settings)
+                } else {
+                    settings
+                };
+                self.throw(Garbage::StudioSettings(old));
+            }
+            Command::StudioWave { lane, wave } => {
+                let old = if lane < 8
+                    && let Some(studio) = &mut self.current.frame.studio
+                {
+                    studio.sampler.replace(lane, wave)
+                } else {
+                    wave
+                };
+                if let Some(old) = old {
+                    self.throw(Garbage::StudioWave(old));
+                }
+            }
+            Command::StudioReverb(next) => {
+                let old = if let Some(studio) = &mut self.current.frame.studio {
+                    studio.replace_reverb(next)
+                } else {
+                    Some(next)
+                };
+                if let Some(old) = old {
+                    self.throw(Garbage::StudioReverb(old));
+                }
+            }
+            Command::StudioAudition(lane) => {
+                if let Some(studio) = &mut self.current.frame.studio {
+                    studio.sampler.audition(lane);
+                }
+            }
             Command::ClosedHatLevel(level) => {
                 self.closed_hat_level = level.map(|v| v.min(127));
                 self.current.frame.devices.channels[3].set_closed_hat_level(self.closed_hat_level);
@@ -678,20 +908,76 @@ impl Audio {
                 }
             }
             Command::Play => {
+                if self
+                    .midi_clock
+                    .shared
+                    .mode
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == clock::SLAVE
+                {
+                    return;
+                }
                 if let Some(new) = self.pending.take() {
                     self.switch(new);
                 } else {
                     self.current.play();
                 }
             }
-            Command::Stop => self.target().stop(),
-            Command::Locate(t) => self.target().locate(t),
+            Command::Stop => {
+                if self
+                    .midi_clock
+                    .shared
+                    .mode
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == clock::SLAVE
+                {
+                    self.midi_clock
+                        .shared
+                        .inhibit
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    self.current.halt();
+                    if let Some(studio) = &mut self.current.frame.studio {
+                        studio.sampler.stop();
+                    }
+                    return;
+                }
+                self.target().stop();
+                if let Some(studio) = &mut self.current.frame.studio {
+                    studio.sampler.stop();
+                }
+            }
+            Command::Locate(t) => {
+                if self
+                    .midi_clock
+                    .shared
+                    .mode
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == clock::SLAVE
+                {
+                    return;
+                }
+                self.midi_clock.resync = true;
+                self.target().locate(t);
+                if let Some(studio) = &mut self.current.frame.studio {
+                    studio.sampler.stop();
+                }
+            }
             Command::SongMode(on) => self.target().set_song_mode(on as u8),
             Command::Record(on) => self.target().set_record(on as u8),
             Command::LoopOn(on) => self.target().set_loop_on(on as u8),
             Command::LoopStart(t) => self.target().set_loop_start(t),
             Command::LoopEnd(t) => self.target().set_loop_end(t),
-            Command::Tempo(t) => self.target().set_tempo(t),
+            Command::Tempo(t) => {
+                if self
+                    .midi_clock
+                    .shared
+                    .mode
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != clock::SLAVE
+                {
+                    self.target().set_tempo(t);
+                }
+            }
             Command::Shuffle(v) => self.target().set_shuffle(v),
             Command::Vintage(on) => self.target().set_vintage(on as u8),
             Command::Param {
@@ -783,7 +1069,11 @@ impl Audio {
     /// only the delay's refill of the shared line outlives the song) and the new song becomes
     /// current (`sub_1001BD24`).
     fn activate(&mut self, mut new: Box<Engine>) {
+        new.frame.independent_hats = self.independent_hats;
         new.frame.devices.channels[3].set_closed_hat_level(self.closed_hat_level);
+        for channel in &mut new.frame.devices.channels[2..] {
+            channel.set_independent_hats(self.independent_hats);
+        }
         new.frame.sidechain.set_config(self.sidechain);
         if let Some(old) = self.pending.take() {
             self.throw(Garbage::Engine(old));
@@ -808,7 +1098,13 @@ impl Audio {
         self.make_current(new);
     }
 
-    fn make_current(&mut self, new: Box<Engine>) {
+    fn make_current(&mut self, mut new: Box<Engine>) {
+        if new.frame.studio.is_none() {
+            new.frame.studio = self.current.frame.studio.take();
+            if let Some(studio) = &mut new.frame.studio {
+                studio.sampler.stop();
+            }
+        }
         let old = std::mem::replace(&mut self.current, new);
         self.throw(Garbage::Engine(old));
         self.generation += 1;
@@ -821,6 +1117,13 @@ impl Audio {
         let s = self.snapshot.input_buffer_mut();
         s.closed_hat_level = f.devices.channels[3].closed_hat_level();
         s.sidechain_reduction = f.sidechain.reduction();
+        s.sampler_meter = f
+            .studio
+            .as_ref()
+            .map_or([0; 2], |studio| studio.sampler_meter());
+        s.sampler_playheads = f.studio.as_ref().map_or([None; 8], |studio| {
+            studio.sampler.playheads(&studio.settings.lanes)
+        });
         s.frames = self.frames;
         s.generation = self.generation;
         s.pending = self.pending.is_some();

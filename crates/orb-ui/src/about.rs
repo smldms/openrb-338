@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Context, Key, Modifiers, RichText};
 
-use crate::app::{self, App};
+use crate::app::App;
 use crate::logo_anim::{self, LOGO_H, LOGO_W};
 use crate::palette::INK_DIM;
 
@@ -25,9 +25,9 @@ const CONTENT_H: f32 = 200.0;
 const TEXT_X: f32 = 108.0;
 
 /// The name of the app.
-pub const NAME: &str = "OpenRB-338";
+pub const NAME: &str = "ACID RECALL";
 /// The project page.
-pub const URL: &str = "https://github.com/pingw33n/openrb-338";
+pub const URL: &str = "https://github.com/smldms/openrb-338";
 /// The user's public collections, shown under the project page as `label url` (task-138).
 /// The user's song collection.
 pub const SONGS_URL: &str = "https://github.com/pingw33n/rb-songs";
@@ -102,14 +102,41 @@ impl App {
                 let at = |x: f32, y: f32| rect.min + egui::vec2(x, y);
                 // the icon fades in with the logo's animation (task-114)
                 let icon_a = t.map_or(1.0, |t| logo_anim::Frame::at(t).icon);
-                app::paint_part_tinted(
-                    ui,
-                    ICON_PART,
+                let icon_id = egui::Id::unique("acid-recall-about-icon");
+                let texture = ctx
+                    .data(|data| data.get_temp::<egui::TextureHandle>(icon_id))
+                    .unwrap_or_else(|| {
+                        let icon = crate::art::app_icon(128);
+                        let texture = ctx.load_texture(
+                            "acid-recall-logo",
+                            egui::ColorImage::from_rgba_unmultiplied([128, 128], &icon.rgba),
+                            egui::TextureOptions::LINEAR,
+                        );
+                        ctx.data_mut(|data| data.insert_temp(icon_id, texture.clone()));
+                        texture
+                    });
+                ui.painter().image(
+                    texture.id(),
                     egui::Rect::from_min_size(at(18.0, 18.0), egui::vec2(ICON_SIZE, ICON_SIZE)),
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE.gamma_multiply(icon_a),
                 );
                 let logo_size = egui::vec2(LOGO_W, LOGO_H) * LOGO_SCALE;
-                logo_anim::paint_logo(ui, egui::Rect::from_min_size(at(92.0, 14.0), logo_size), t);
+                let logo_rect = egui::Rect::from_min_size(at(92.0, 14.0), logo_size);
+                ui.painter().text(
+                    logo_rect.left_top(),
+                    egui::Align2::LEFT_TOP,
+                    NAME,
+                    egui::FontId::proportional(27.0),
+                    crate::palette::INK,
+                );
+                ui.painter().text(
+                    at(108.0, 66.0),
+                    egui::Align2::LEFT_TOP,
+                    "Based on OpenRB-338",
+                    egui::FontId::proportional(12.0),
+                    INK_DIM,
+                );
                 let line_at = |ui: &mut egui::Ui, x: f32, y: f32, f: &dyn Fn(&mut egui::Ui)| {
                     let r = egui::Rect::from_min_size(at(x, y), egui::vec2(CONTENT_W - x, 18.0));
                     ui.scope_builder(egui::UiBuilder::new().max_rect(r), f);

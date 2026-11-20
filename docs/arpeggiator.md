@@ -1,6 +1,7 @@
 # TB arpeggiators
 
-Click **ARP** below the waveform switch on either TB, or use **Options > Arpeggiator**.
+Click **ARP** on either TB to apply its current arpeggiator settings immediately.
+Use **Options > Arpeggiator** to configure the chord, direction, length and other settings.
 Each TB has independent settings and an independent one-level Undo.
 
 Choose **Chord** to select a root and chord, or **Current pattern** to extract the distinct
@@ -11,7 +12,7 @@ Choose Up, Down, Up/Down, Down/Up, Source order or Random. Bouncing directions d
 the endpoints. Random is repeatable until **New random variation** changes its seed.
 Start offset moves the first note in the ordered sequence; it is disabled for Random.
 
-Set the output length (1-16 steps), octave expansion (1-3), rhythm, accent interval
+Set the output length (1–16 steps), octave expansion (1–3), rhythm, accent interval
 (0 disables accents), and optional slides between adjacent active notes.
 Rhythm uses the existing sixteenth-note sequencer: 1/8, for example, places a note every two
 steps with a rest between them. Slides do not cross rests, and a one-step pattern cannot slide.

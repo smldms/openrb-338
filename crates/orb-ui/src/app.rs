@@ -113,6 +113,8 @@ impl Shot {
 }
 
 pub struct App {
+    pub(crate) settlement: u64,
+    pub studio: crate::studio::StudioUi,
     pub panel: Panel,
     /// The player the panel drives (task-045); without one the model's events pile up in
     /// `Panel::events`.
@@ -214,6 +216,8 @@ pub struct App {
 impl App {
     pub fn new(panel: Panel, shot: Option<Shot>) -> Self {
         Self {
+            studio: crate::studio::StudioUi::default(),
+            settlement: 0,
             panel,
             link: None,
             samples: None,
@@ -271,7 +275,11 @@ impl App {
     /// Opens the file browser for `mode` over the panel (the menu calls this). Ctrl/Cmd+O opens it
     /// for a song.
     pub fn open_browser(&mut self, mode: Mode) {
-        self.browser = Some(Browser::new(mode, &self.settings));
+        let mut browser = Browser::new(mode, &self.settings);
+        if mode == Mode::SaveSong && self.studio.content {
+            browser = browser.with_studio();
+        }
+        self.browser = Some(browser);
     }
 
     /// Where the open browser drew its part `name` last (for tests; `Browser::hit`).
@@ -593,6 +601,18 @@ impl App {
 
     /// Draws the whole panel in the free area of `ui` and handles the input.
     pub fn show(&mut self, ui: &mut Ui) {
+        self.studio.context = ui.ctx().clone();
+        self.studio_poll(ui.ctx());
+        if self.studio.opening {
+            egui::Modal::new(egui::Id::unique("studio-opening")).show(ui.ctx(), |ui| {
+                ui.heading("Opening Studio project");
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Preparing samples and impulse response...");
+                });
+            });
+            return;
+        }
         self.check_audio();
         self.midi_tick(ui.ctx());
         // The theme is always dark (task-127): the colors of the windows assume it. Set on
@@ -634,45 +654,98 @@ impl App {
                 } else {
                     self.keyboard(ui);
                 }
-                self.focus_click(ui, &view);
+                if !self.studio.modern {
+                    self.focus_click(ui, &view);
+                }
             }
         } else {
             self.holds.clear();
         }
 
-        for (name, x, y) in layout::backgrounds() {
-            let (w, h) = part_size(name);
-            if name == logo_anim::LOGO_PART {
-                // once per app start, from the first frame the logo is drawn
-                if self.logo_anim && self.logo_start.is_none() {
-                    self.logo_start = Some(now);
+        if self.studio.modern {
+            let enabled = self.browser.is_none() && self.prompt.is_none() && !self.error_open();
+            let mut rack_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(avail)
+                    .id_salt("native-rack"),
+            );
+            rack_ui.add_enabled_ui(enabled, |ui| {
+                egui::ScrollArea::both()
+                    .id_salt("rack-viewport")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let size = Vec2::new(
+                            ui.available_width().max(crate::graphite_rack::WIDTH * 0.9),
+                            ui.available_height()
+                                .max(crate::graphite_rack::HEIGHT * 0.9),
+                        );
+                        let (canvas, _) = ui.allocate_exact_size(size, Sense::hover());
+                        let (sampler, fx) = self.graphite_rack(ui, canvas);
+                        self.graphite_sampler(ui, sampler);
+                        self.graphite_fx(ui, fx);
+                        for (row, rect) in crate::graphite_rack::sidechain_areas(canvas)
+                            .into_iter()
+                            .enumerate()
+                        {
+                            self.graphite_sidechain(ui, rect, row);
+                        }
+                    });
+            });
+        } else {
+            for (name, x, y) in layout::backgrounds() {
+                if self.studio.modern && x == 526.0 && y >= 148.0 {
+                    continue;
                 }
-                let t = logo_anim::time_now(now, self.logo_start.filter(|_| self.logo_anim));
-                logo_anim::paint_logo(ui, view.rect(x, y, w, h), t);
-                continue;
+                let (w, h) = part_size(name);
+                if name == logo_anim::LOGO_PART {
+                    // once per app start, from the first frame the logo is drawn
+                    if self.logo_anim && self.logo_start.is_none() {
+                        self.logo_start = Some(now);
+                    }
+                    let t = logo_anim::time_now(now, self.logo_start.filter(|_| self.logo_anim));
+                    logo_anim::paint_logo(ui, view.rect(x, y, w, h), t);
+                    continue;
+                }
+                paint_part(ui, name, view.rect(x, y, w, h));
             }
-            paint_part(ui, name, view.rect(x, y, w, h));
-        }
-        for r in 0..4 {
-            let (x, y, w, h) = layout::focus_bar(r);
-            let name = if self.panel.focus == r {
-                "focus_on"
-            } else {
-                "focus_off"
-            };
-            paint_part(ui, name, view.rect(x, y, w, h));
-        }
+            for r in 0..4 {
+                let (x, y, w, h) = layout::focus_bar(r);
+                let name = if self.panel.focus == r {
+                    "focus_on"
+                } else {
+                    "focus_off"
+                };
+                paint_part(ui, name, view.rect(x, y, w, h));
+            }
 
-        let ctls = std::mem::take(&mut self.ctls);
-        for c in &ctls {
-            self.control(ui, &view, c, now);
+            let ctls = std::mem::take(&mut self.ctls);
+            for c in &ctls {
+                if self.studio.modern && c.x >= 526.0 && c.y >= 148.0 {
+                    continue;
+                }
+                if self.studio.modern
+                    && c.section.starts_with("mixer")
+                    && let Some(index) = ["dist", "pcf", "comp"]
+                        .iter()
+                        .position(|&id| id == c.name())
+                {
+                    let mut compact = c.clone();
+                    compact.y = c.y - [112.0, 128.0, 144.0][index] + 114.0 + index as f32 * 12.0;
+                    compact.h = 10.0;
+                    self.control(ui, &view, &compact, now);
+                    continue;
+                }
+                self.control(ui, &view, c, now);
+            }
+            self.ctls = ctls;
+            self.drum_strips(ui, &view);
+            self.instrument_selection(ui, &view);
+            self.generator_buttons(ui, &view);
+            self.arpeggiator_buttons(ui, &view);
+            self.sidechain_button(ui, &view);
+            self.studio_rack(ui, &view);
         }
-        self.ctls = ctls;
-        self.drum_strips(ui, &view);
-        self.instrument_selection(ui, &view);
-        self.generator_buttons(ui, &view);
-        self.arpeggiator_buttons(ui, &view);
-        self.sidechain_button(ui, &view);
+        self.studio_midi();
         self.sync_effects(ui.ctx());
 
         // Send what was done, take what the engine did (the panel follows playback).
@@ -712,6 +785,7 @@ impl App {
         self.generator_ui(&ctx);
         self.arpeggiator_ui(&ctx);
         self.sidechain_ui(&ctx);
+        self.studio_ui(&ctx);
         self.poll_export(&ctx);
         self.update_title(&ctx);
         self.close_if_allowed(&ctx);
@@ -831,6 +905,7 @@ impl App {
     }
 
     fn control(&mut self, ui: &mut Ui, view: &View, c: &Ctl, now: f64) {
+        use crate::midi::MidiMenu;
         let rect = view.rect(c.x, c.y, c.w, c.h);
         match c.kind.as_str() {
             "area" | "steps" => {}
@@ -841,6 +916,7 @@ impl App {
             "knob" => self.knob(ui, view, c, rect),
             "fader" => self.fader(ui, view, c, rect),
             "display" => {
+                self.hit(ui, c, rect).midi_menu(ui, &c.id);
                 let n = (c.w / 9.0) as usize;
                 let frames = behavior::digit_frames(self.panel.display(&c.id), n);
                 for (i, f) in frames.into_iter().enumerate() {
@@ -853,7 +929,7 @@ impl App {
                 paint_part(ui, &name, rect);
             }
             kind => {
-                let r = self.hit(ui, c, rect);
+                let r = self.hit(ui, c, rect).midi_menu(ui, &c.id);
                 let down = r.is_pointer_button_down_on() || self.key_held(&c.id);
                 match kind {
                     "repeat" | "wind" => self.repeat(ui, c, &r),
@@ -927,7 +1003,7 @@ impl App {
     /// True on the frame the mouse goes down on the control (the action runs at mouse down).
     fn first_press(&self, ui: &Ui, c: &Ctl, r: &Response) -> bool {
         let (id, mut g) = Self::gesture(ui, c);
-        let down = r.is_pointer_button_down_on();
+        let down = r.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down());
         let first = down && !g.down;
         g.down = down;
         ui.data_mut(|d| d.insert_temp(id, g));
@@ -968,9 +1044,10 @@ impl App {
     }
 
     fn knob(&mut self, ui: &mut Ui, view: &View, c: &Ctl, rect: Rect) {
-        let r = self.hit(ui, c, rect);
+        use crate::midi::MidiMenu;
+        let r = self.hit(ui, c, rect).midi_menu(ui, &c.id);
         let (id, mut g) = Self::gesture(ui, c);
-        let down = r.is_pointer_button_down_on();
+        let down = r.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down());
         if r.hovered() || down {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
         }
@@ -1009,9 +1086,10 @@ impl App {
     }
 
     fn fader(&mut self, ui: &mut Ui, view: &View, c: &Ctl, rect: Rect) {
-        let r = self.hit(ui, c, rect);
+        use crate::midi::MidiMenu;
+        let r = self.hit(ui, c, rect).midi_menu(ui, &c.id);
         let (id, mut g) = Self::gesture(ui, c);
-        let down = r.is_pointer_button_down_on();
+        let down = r.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down());
         if down {
             self.panel.held = Some(c.id.clone());
             if !g.down {
@@ -1163,6 +1241,10 @@ impl App {
     /// With `--screenshot`: after a few frames (the SVGs are loaded and rasterized) save the
     /// window to the file and quit.
     fn screenshot(&mut self, ctx: &egui::Context) {
+        if self.studio.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(40));
+            return;
+        }
         let Some(shot) = &mut self.shot else {
             return;
         };

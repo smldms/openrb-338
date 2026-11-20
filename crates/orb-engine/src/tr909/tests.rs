@@ -339,3 +339,20 @@ fn set_samples_silences_then_replaces_the_table() {
     let rs = d.simple.iter().find(|v| v.v.active).unwrap();
     assert_eq!(slot_of(&rs.v.sample), -(slot::RS as i16) - 1);
 }
+
+#[test]
+fn independent_hats_keep_both_voices_and_separate_levels() {
+    let mut d = device(rbs_defaults(), &[]);
+    d.gain = 1.0;
+    d.set_independent_hats(true);
+    d.trigger(OH);
+    let open = (d.simple[SIMPLE_OH].v.m, d.simple[SIMPLE_OH].v.hold);
+    d.trigger(CH);
+    let closed_gain = d.simple[SIMPLE_CH].v.g;
+    assert!(closed_gain > 0.0);
+    assert_eq!((d.simple[SIMPLE_OH].v.m, d.simple[SIMPLE_OH].v.hold), open);
+    assert!(d.simple[SIMPLE_CH].v.active && d.simple[SIMPLE_OH].v.active);
+    d.live[HH_LEVEL] = 0;
+    d.trigger(CH);
+    assert_eq!(d.simple[SIMPLE_CH].v.g, closed_gain);
+}

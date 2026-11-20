@@ -31,6 +31,7 @@ pub mod samples;
 pub mod seq;
 pub mod sidechain;
 pub mod song;
+pub mod studio;
 pub mod tables;
 pub mod tb303;
 #[cfg(test)]

@@ -86,6 +86,37 @@ fn the_counter_counts() {
     assert_eq!(n, 2);
 }
 
+#[test]
+fn midi_clock_bridge_does_not_allocate_on_the_audio_thread() {
+    use orb_player::clock::{InputFrame, MASTER, OFF, SLAVE};
+    let (mut player, mut audio) = Player::new(tables(), None);
+    let mut connection = player.take_midi_clock().unwrap();
+    let mut buf = [0; 2 * CALL_FRAMES];
+    connection.shared.mode.store(MASTER, Ordering::Release);
+    send(&mut player, Command::Play);
+    assert_eq!(render(&mut audio, &mut buf, 8), 0);
+    while connection.output.pop().is_ok() {}
+    connection.shared.mode.store(SLAVE, Ordering::Release);
+    connection.shared.write(InputFrame {
+        at: connection.shared.now(),
+        tick: 96,
+        period: 20_833_333,
+        playing: true,
+        generation: 1,
+    });
+    assert_eq!(render(&mut audio, &mut buf, 8), 0);
+    connection.shared.write(InputFrame {
+        at: connection.shared.now(),
+        tick: 144,
+        period: 20_833_333,
+        playing: false,
+        generation: 2,
+    });
+    assert_eq!(render(&mut audio, &mut buf, 8), 0);
+    connection.shared.mode.store(OFF, Ordering::Release);
+    assert_eq!(render(&mut audio, &mut buf, 8), 0);
+}
+
 /// `calls` engine calls through `render_i16`, armed; returns the events.
 fn render(a: &mut Audio, buf: &mut [i16], calls: usize) -> usize {
     armed(|| {
@@ -108,6 +139,52 @@ fn the_callback_does_not_allocate() {
     send(&mut p, Command::Play);
     events += render(&mut a, &mut buf, 40);
     assert!(p.snapshot().playing && p.snapshot().generation == 1);
+    let ir = orb_engine::studio::convolution::synthetic(0, 0.15);
+    let convolver = || Box::new(orb_engine::studio::convolution::Convolver::new(&ir).unwrap());
+    let mut studio = Box::new(orb_engine::studio::Studio::new(convolver()));
+    studio.settings.sends = [0.3; 4];
+    studio.settings.sampler_bus.dist = true;
+    studio.settings.sampler_bus.delay = 0.3;
+    studio.settings.sampler_bus.reverb_send = 0.2;
+    studio.settings.sampler_bus.pan = -0.25;
+    for (i, lane) in studio.settings.lanes.iter_mut().enumerate() {
+        lane.mode = [
+            orb_engine::studio::sampler::Mode::OneShot,
+            orb_engine::studio::sampler::Mode::AutoCut,
+            orb_engine::studio::sampler::Mode::Gate,
+            orb_engine::studio::sampler::Mode::Loop,
+        ][i % 4];
+        lane.steps[0] = 100;
+        lane.steps[3] = 80;
+        lane.send = 0.2;
+        lane.warp = i % 2 == 0;
+        lane.warp_bpm = 110.0;
+        lane.warp_markers.insert(0.5, 0.65, 0.0, 1.0).unwrap();
+        studio.sampler.waves[i] = Some(Box::new(orb_engine::studio::audio_file::Wave {
+            frames: (0..8000)
+                .map(|n| {
+                    let value = (n as f64 * std::f64::consts::TAU * 330.0 / 44100.0).sin() as f32;
+                    [value * 0.03, value * -0.03]
+                })
+                .collect(),
+        }));
+    }
+    send(&mut p, Command::Studio(studio));
+    send(&mut p, Command::Locate(0));
+    events += render(&mut a, &mut buf, 32);
+    for _ in 0..3 {
+        send(&mut p, Command::StudioReverb(convolver()));
+        events += render(&mut a, &mut buf, 1);
+    }
+    send(
+        &mut p,
+        Command::StudioWave {
+            lane: 0,
+            wave: None,
+        },
+    );
+    send(&mut p, Command::StudioSettings(Box::default()));
+    events += render(&mut a, &mut buf, 8);
     let mixer = |ctrl, value| Command::Param {
         device: Device::Mixer,
         ctrl,

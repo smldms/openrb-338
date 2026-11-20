@@ -118,27 +118,15 @@ pub fn knob_design(part: &str) -> &'static KnobDesign {
 
 /// The window's icon: the `app_icon` part rendered at `size` x `size` pixels.
 pub fn app_icon(size: u32) -> eframe::egui::IconData {
-    let svg = part("app_icon").expect("app_icon part").svg;
-    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default())
-        .expect("app_icon parses");
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size).unwrap();
-    let scale = size as f32 / tree.size().width();
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::from_scale(scale, scale),
-        &mut pixmap.as_mut(),
-    );
-    // IconData is straight (not premultiplied) RGBA.
-    let rgba = pixmap
-        .pixels()
-        .iter()
-        .flat_map(|p| {
-            let c = p.demultiply();
-            [c.red(), c.green(), c.blue(), c.alpha()]
-        })
-        .collect();
+    let image = image::load_from_memory_with_format(
+        include_bytes!("../../../assets/brand/acid-recall.png"),
+        image::ImageFormat::Png,
+    )
+    .expect("ACID RECALL icon decodes")
+    .resize_exact(size, size, image::imageops::FilterType::Lanczos3)
+    .into_rgba8();
     eframe::egui::IconData {
-        rgba,
+        rgba: image.into_raw(),
         width: size,
         height: size,
     }

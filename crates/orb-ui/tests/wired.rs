@@ -828,7 +828,7 @@ fn the_808_step_buttons_edit_the_selected_instrument_live() {
 }
 
 #[test]
-fn the_909_step_buttons_send_the_values_of_the_modifiers_and_clear_the_other_hihat() {
+fn the_909_step_buttons_send_modifiers_and_preserve_the_other_hihat() {
     let mut h = Harness::new();
     let o = layout::TR909_ORIGIN;
     let strip = |step: usize| Pos2::new(o.0 + 29.0 + 21.0 * step as f32 + 10.0, o.1 + 86.0 + 8.0);
@@ -853,7 +853,7 @@ fn the_909_step_buttons_send_the_values_of_the_modifiers_and_clear_the_other_hih
         h.take_log(),
         [(1, 1), (2, 2), (3, 3)].map(|(s, v)| dev(Device::Tr909, 79, &[0, s, 1, v]))
     );
-    // CH (instrument 8) on step 5, then OH (9) on the same step clears the CH: two messages
+    // CH (8) and OH (9) coexist on step 5; adding OH sends no CH deletion.
     h.click_at(Pos2::new(o.0 + 236.0 + 21.0 * 2.0 + 10.0, o.1 + 11.0));
     assert_eq!(h.app.panel.inst909, 8);
     h.click_at(strip(4));
@@ -861,18 +861,20 @@ fn the_909_step_buttons_send_the_values_of_the_modifiers_and_clear_the_other_hih
     assert_eq!(h.app.panel.inst909, 9);
     h.take_log();
     h.click_at(strip(4));
-    assert_eq!(
-        h.take_log(),
-        vec![
-            dev(Device::Tr909, 79, &[0, 4, 9, 1]),
-            dev(Device::Tr909, 79, &[0, 4, 8, 0])
-        ]
-    );
+    assert_eq!(h.take_log(), vec![dev(Device::Tr909, 79, &[0, 4, 9, 1])]);
     h.calls(2);
     let pat = h.engine_patterns(3);
     let at = |s: usize, i: usize| pat[2 + 12 * s + i];
     assert_eq!((at(1, 1), at(2, 1), at(3, 1)), (1, 2, 3));
-    assert_eq!((at(4, 8), at(4, 9)), (0, 1));
+    assert_eq!((at(4, 8), at(4, 9)), (1, 1));
+    let saved = rbs::Song::parse(&h.app.song_bytes().unwrap()).unwrap();
+    assert_eq!(
+        (
+            saved.tr909.patterns[0].steps[4][8],
+            saved.tr909.patterns[0].steps[4][9]
+        ),
+        (1, 1)
+    );
 }
 
 #[test]

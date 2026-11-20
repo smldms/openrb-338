@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align2, Color32, Context, FontId, Rect, Sense, Ui};
 
-use super::{Change, DrumStyle, Rng, Scale, Undo, drum_pattern, tb_pair};
+use super::{Change, DrumStyle, Rng, Scale, Undo, drum_pattern, tb_pair, tb_pair_lengths};
 use crate::app::{App, View};
 
 const MACHINES: [&str; 4] = ["TB-303 A", "TB-303 B", "TR-808", "TR-909"];
@@ -70,12 +70,16 @@ impl App {
         let options = &self.generator.options;
         let length = self.panel.rows[row].len[self.panel.rows[row].pattern as usize].clamp(1, 16);
         let linked = row < 2 && options.link_tb;
+        let tb_lengths = std::array::from_fn(|r| {
+            self.panel.rows[r].len[usize::from(self.panel.rows[r].pattern)].clamp(1, 16)
+        });
         let shuffle = self.panel.rows[row].shuffle[self.panel.rows[row].pattern as usize];
         let generated: Vec<(usize, Vec<u8>)> = if row < 2 {
-            let [bass, answer] = tb_pair(options, length, seed);
             if linked {
+                let [bass, answer] = tb_pair_lengths(options, tb_lengths, seed);
                 vec![(0, bass), (1, answer)]
             } else {
+                let [bass, _] = tb_pair(options, length, seed);
                 vec![(row, bass)]
             }
         } else {
@@ -114,9 +118,11 @@ impl App {
         self.generator.undo = Some(Undo { changes, tuning });
         self.generator.notice = Some(if linked {
             format!(
-                "Generated linked TBs: {} {}, {length} steps.",
+                "Generated linked TBs: {} {}, {} / {} steps.",
                 NOTES[usize::from(self.generator.options.root % 12)],
-                self.generator.options.scale.name()
+                self.generator.options.scale.name(),
+                tb_lengths[0],
+                tb_lengths[1],
             )
         } else {
             format!("Generated {}: {length} steps.", MACHINES[row])
@@ -221,9 +227,7 @@ impl App {
                     self.generator.options.link_tb,
                     view.scale,
                 )
-                .on_hover_text(
-                    "LINK TB: generate both bass lines in one key, with shared length and tuning.",
-                );
+                .on_hover_text("LINK TB: shared key and tuning, independent pattern lengths.");
                 if response.clicked() {
                     self.generator.options.link_tb = !self.generator.options.link_tb;
                 }
@@ -274,22 +278,20 @@ impl App {
                 });
                 ui.checkbox(&mut o.link_tb, "LINK TB - two complementary lines");
                 ui.small(
-                    "Linked TBs use the clicked TB's length and tuning, in the selected key/scale.",
+                    "Each TB keeps its own length. LINK shares key, scale, tuning and groove.",
                 );
                 ui.add(egui::Slider::new(&mut o.density, 0..=100).text("Notes (%)"));
                 ui.add(egui::Slider::new(&mut o.accents, 0..=100).text("Accents (%)"));
                 ui.add(egui::Slider::new(&mut o.slides, 0..=100).text("Slides (%)"));
                 ui.add(egui::Slider::new(&mut o.variation, 0..=100).text("Variation (%)"));
                 ui.separator();
-                ui.label("Drum grooves");
+                ui.label("Style / musical grammar");
                 ui.horizontal(|ui| {
-                    ui.selectable_value(
-                        &mut o.drum_style,
-                        DrumStyle::Techno,
-                        "Techno / four on the floor",
-                    );
-                    ui.selectable_value(&mut o.drum_style, DrumStyle::Broken, "Broken");
+                    for style in DrumStyle::ALL {
+                        ui.selectable_value(&mut o.drum_style, style, style.name());
+                    }
                 });
+                ui.small(o.drum_style.description());
                 ui.add(egui::Slider::new(&mut o.drum_density, 0..=100).text("Drum density (%)"));
                 ui.separator();
                 for (row, name) in MACHINES.iter().enumerate() {

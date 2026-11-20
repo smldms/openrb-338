@@ -289,7 +289,7 @@ fn undo_retains_noncanonical_original_shuffle_bytes() {
 }
 
 #[test]
-fn rack_arp_buttons_open_the_matching_editor_without_changing_notes() {
+fn rack_arp_button_applies_to_the_matching_tb_without_opening_an_editor() {
     use eframe::egui::{self, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
     let ctx = egui::Context::default();
     egui_extras::install_image_loaders(&ctx);
@@ -324,12 +324,12 @@ fn rack_arp_buttons_open_the_matching_editor_without_changing_notes() {
         pressed: false,
         modifiers: Modifiers::default(),
     }]);
-    assert_eq!(app.arpeggiator.open, [false, true]);
-    assert_eq!(
-        [app.panel.pattern_bytes(0), app.panel.pattern_bytes(1)],
-        before
-    );
-    assert!(!app.doc.modified);
+    assert_eq!(app.arpeggiator.open, [false, false]);
+    assert_eq!(app.panel.pattern_bytes(0), before[0]);
+    assert_ne!(app.panel.pattern_bytes(1), before[1]);
+    assert!(app.doc.modified);
+    assert!(app.undo_arpeggiator(1));
+    assert_eq!(app.panel.pattern_bytes(1), before[1]);
 }
 
 #[test]

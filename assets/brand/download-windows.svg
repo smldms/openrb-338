@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="64" viewBox="0 0 300 64" role="img" aria-labelledby="title desc">
+  <title id="title">DOWNLOAD — Windows x64</title>
+  <desc id="desc">Download the ACID RECALL portable Windows preview</desc>
+  <rect x="1" y="1" width="298" height="62" rx="10" fill="#b6f539" stroke="#b6f539" stroke-width="2"/>
+  <path d="M30 17v21m-8-8 8 8 8-8M19 42v5h22v-5" fill="none" stroke="#172018" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#172018" font-family="Arial, Helvetica, sans-serif">
+    <text x="60" y="29" font-size="21" font-weight="700" letter-spacing="2">DOWNLOAD</text>
+    <text x="61" y="48" font-size="12" font-weight="700" letter-spacing="1">WINDOWS x64 · PORTABLE ZIP</text>
+  </g>
+</svg>

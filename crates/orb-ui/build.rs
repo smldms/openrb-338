@@ -109,7 +109,7 @@ fn embed_windows_resources(manifest: &Path, version: &str) {
     }
     // Not canonicalized: on Windows that gives a `\\?\D:\...` path, which rc.exe may not open.
     // The `..` parts and (below) forward slashes are fine for rc.exe and llvm-rc.
-    let ico = manifest.join("../../assets/app_icon.ico");
+    let ico = manifest.join("../../assets/brand/acid-recall.ico");
     assert!(
         ico.is_file(),
         "{} is missing (cargo run -p orb-ui-art --bin ui-art -- ico)",
@@ -132,13 +132,13 @@ fn embed_windows_resources(manifest: &Path, version: &str) {
          BEGIN\n\
          BLOCK \"040904B0\"\n\
          BEGIN\n\
-         VALUE \"CompanyName\", \"OpenRB-338\\0\"\n\
-         VALUE \"FileDescription\", \"OpenRB-338\\0\"\n\
+         VALUE \"CompanyName\", \"ACID RECALL\\0\"\n\
+         VALUE \"FileDescription\", \"ACID RECALL\\0\"\n\
          VALUE \"FileVersion\", \"{version}\\0\"\n\
-         VALUE \"InternalName\", \"OpenRB-338\\0\"\n\
+         VALUE \"InternalName\", \"ACID-RECALL\\0\"\n\
          VALUE \"LegalCopyright\", \"GPL-3.0-only\\0\"\n\
-         VALUE \"OriginalFilename\", \"OpenRB-338.exe\\0\"\n\
-         VALUE \"ProductName\", \"OpenRB-338\\0\"\n\
+         VALUE \"OriginalFilename\", \"ACID-RECALL.exe\\0\"\n\
+         VALUE \"ProductName\", \"ACID RECALL\\0\"\n\
          VALUE \"ProductVersion\", \"{version}\\0\"\n\
          END\n\
          END\n\

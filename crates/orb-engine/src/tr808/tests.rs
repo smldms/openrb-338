@@ -336,3 +336,15 @@ fn set_samples_silences_then_replaces_the_table() {
     assert!(d.simple[0].v.active);
     assert_eq!(slot_of(&d.simple[0].v.sample), -(slot::CL as i16));
 }
+
+#[test]
+fn independent_closed_hat_does_not_shorten_open_hat() {
+    let mut d = device(DEFAULT_PARAMS, &[]);
+    d.set_independent_hats(true);
+    d.trigger(OH);
+    let open = (d.simple[SIMPLE_OH].v.m, d.simple[SIMPLE_OH].v.hold);
+    assert!(open.1 > 0);
+    d.trigger(CH);
+    assert_eq!((d.simple[SIMPLE_OH].v.m, d.simple[SIMPLE_OH].v.hold), open);
+    assert!(d.simple[SIMPLE_CH].v.active && d.simple[SIMPLE_OH].v.active);
+}

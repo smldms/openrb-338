@@ -26,7 +26,7 @@ fn help_shows_only_the_song_and_exits_0() {
         let o = run(&[flag]);
         assert_eq!(o.status.code(), Some(0), "{flag}");
         let out = String::from_utf8(o.stdout).unwrap();
-        assert!(out.contains("usage: OpenRB-338 [SONG]"), "{out}");
+        assert!(out.contains("usage: ACID-RECALL [SONG]"), "{out}");
         for hidden in [
             "--demo",
             "--size",
@@ -48,7 +48,7 @@ fn a_bad_option_exits_2_with_the_same_usage() {
         let o = run(args);
         assert_eq!(o.status.code(), Some(2), "{args:?}");
         let err = String::from_utf8(o.stderr).unwrap();
-        assert!(err.contains("usage: OpenRB-338 [SONG]"), "{err}");
+        assert!(err.contains("usage: ACID-RECALL [SONG]"), "{err}");
         assert!(!err.contains("--demo"), "{err}");
     }
 }

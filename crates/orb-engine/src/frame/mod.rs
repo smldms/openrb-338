@@ -111,7 +111,8 @@ impl std::fmt::Display for Fault {
         match self {
             Fault::PcfZeroLength { wave } => write!(
                 f,
-                "the PCF's wave {wave} has pattern length 0 and divides by zero (0x10016811)"
+                "the PCF's wave {wave} has pattern length 0 and divides by \
+            zero (0x10016811)"
             ),
         }
     }
@@ -253,6 +254,7 @@ pub trait SongDevice: Send {
 
 /// A mixer channel's sound source: TB-303 #1, #2, TR-808 or TR-909.
 pub trait ChannelDevice: SongDevice {
+    fn set_independent_hats(&mut self, _independent: bool) {}
     /// Optional extension: a separate closed-hat level, None for the legacy shared control.
     fn set_closed_hat_level(&mut self, _level: Option<u8>) {}
     fn closed_hat_level(&self) -> u8 {
@@ -261,6 +263,14 @@ pub trait ChannelDevice: SongDevice {
     /// Optional extension: the number of kick triggers, for the default sidechain tool.
     fn kick_count(&self) -> u64 {
         0
+    }
+    /// Logical drum hits by native pattern column: 1..11 instruments, 0 reserved for accent.
+    fn drum_trigger_count(&self, _voice: usize) -> u64 {
+        0
+    }
+    /// Logical synth gate for optional modulation, independent of mixer volume.
+    fn gate_open(&self) -> bool {
+        false
     }
     /// Vtable slot 14 (0x10013580): render one block into `bus`, overwriting all of it.
     fn process(&mut self, bus: &mut Block, ctx: &BlockContext);
@@ -784,6 +794,10 @@ pub struct EngineState {
 
 /// The mixer and its devices: everything one block touches.
 pub struct Frame {
+    /// Desktop extension: CH and OH have independent voices and levels.
+    pub independent_hats: bool,
+    /// Optional Studio instruments/effects, prepared outside the audio callback.
+    pub studio: Option<Box<crate::studio::Studio>>,
     /// Optional TB ducking; the default state preserves the original rendering exactly.
     pub sidechain: crate::sidechain::Ducker,
     pub state: MixerState,
@@ -844,6 +858,8 @@ fn meter_byte(x: f64, full: bool) -> u8 {
 impl Frame {
     pub fn new(tables: Arc<Tables>, devices: Devices) -> Self {
         Frame {
+            independent_hats: false,
+            studio: None,
             sidechain: crate::sidechain::Ducker::default(),
             state: MixerState::default(),
             vintage: false,
@@ -925,6 +941,11 @@ impl Frame {
     /// [`Fault`] ends it where the original's exception does, right after the faulting insert:
     /// the rest of the block (later channels, the send, the master) does not run.
     pub fn block(&mut self, l: &mut Block, r: &mut Block) -> Result<(), Fault> {
+        if self.independent_hats {
+            for channel in &mut self.devices.channels[2..] {
+                channel.set_independent_hats(true);
+            }
+        }
         self.blocks += 1;
         if self.state.counter & (UPDATE_PERIOD - 1) == 0 {
             self.mixer_update();
@@ -933,19 +954,28 @@ impl Frame {
             self.stack_word = Some(self.devices.mixer.live.comp_id as i32);
         }
         self.state.counter = self.state.counter.wrapping_add(1);
+        if let Some(studio) = &mut self.studio {
+            studio.begin();
+        }
+        let drum_before: [[u64; 12]; 2] = if self.studio.is_some() {
+            std::array::from_fn(|d| {
+                std::array::from_fn(|voice| self.devices.channels[d + 2].drum_trigger_count(voice))
+            })
+        } else {
+            [[0; 12]; 2]
+        };
         if self.seq.tick(&mut self.devices) {
             // 0x1001F3B3: the tempo (globals +4) the step loop passes, into its local there
             self.stack_word = Some(self.seq.globals.tempo as i32);
         }
-        let kicks = [
-            self.devices.channels[2].kick_count(),
-            self.devices.channels[3].kick_count(),
-        ];
+        let drum_counts = std::array::from_fn(|d| {
+            std::array::from_fn(|voice| self.devices.channels[d + 2].drum_trigger_count(voice))
+        });
         let audible = std::array::from_fn(|i| {
             let channel = self.devices.mixer.live.channels[i + 2];
             channel.enabled != 0 && channel.level != 0
         });
-        let duck = self.sidechain.gains(kicks, audible);
+        let duck = self.sidechain.gains_for_voices(drum_counts, audible);
         let mi = (self.state.meter_index + METER_STEP) & 63;
         self.state.meter_index = mi;
         let mi = mi as usize;
@@ -991,6 +1021,10 @@ impl Frame {
                     }
                 }
             }
+            // Output calibration must not overdrive the distortion/PCF/compressor inputs.
+            if let Some(studio) = &mut self.studio {
+                studio.trim_drum(c, bus);
+            }
             // 0x100135FA: the channel's peak meter
             let v = abs_bits(bus[mi]);
             if v > ch.peak {
@@ -1018,15 +1052,44 @@ impl Frame {
                     let b = bus[j] as f64;
                     l[j] = st(b * gl + l[j] as f64);
                     r[j] = st(b * gr + r[j] as f64);
+                    if let Some(studio) = &mut self.studio {
+                        studio.channel(c, j, b * gl, b * gr);
+                    }
                 }
                 gl += dl;
                 gr += dr;
             }
         }
-        // 0x10013844: the send effect
+        if let Some(studio) = &mut self.studio {
+            let advance = f64::from(self.seq.globals.tempo) * f64::from_bits(0x3ED3_7A72_81B2_2126)
+                / BLOCK as f64;
+            let gates = std::array::from_fn(|i| self.devices.channels[i].gate_open());
+            let drum_triggers = std::array::from_fn(|d| {
+                std::array::from_fn(|voice| {
+                    self.devices.channels[d + 2]
+                        .drum_trigger_count(voice)
+                        .wrapping_sub(drum_before[d][voice])
+                })
+            });
+            studio.modulation(crate::studio::Modulation {
+                gates,
+                drum_triggers,
+                drum_counts,
+                audible,
+                config: self.sidechain.config(),
+                ticks_per_frame: advance,
+            });
+            studio.prepare_sampler(self.seq.pos, advance, self.seq.globals.play != 0);
+            ctx.stack_word = None;
+            studio.route_sampler(Some((&*self.devices.dist, &ctx)), &mut self.state.send);
+        }
+        // 0x10013844: the native delay receives legacy channels and the optional sampler bus.
         ctx.stack_word = None;
         self.devices.delay.process(&mut self.state.send, l, r, &ctx);
         self.stack_word = self.devices.delay.stack_word(self.out_end, self.stack_word);
+        if let Some(studio) = &mut self.studio {
+            studio.mix(l, r);
+        }
         // 0x10013883: the compressor on the master
         if self.state.master_comp {
             self.devices.comp.process_stereo(l, r, &ctx);

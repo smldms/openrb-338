@@ -16,18 +16,20 @@ the loop boundary, and inactive steps beyond the requested length are cleared.
 ## LINK TB
 
 The two **LINK** buttons show the same shared state. When enabled, clicking RND on either TB
-generates both selected TB slots together. They use the clicked TB's length, shuffle and tuning, and
-the generator's common key/scale. TB A is a bass call; TB B answers in its gaps in a higher
-register. When both sound on a step, pitch intervals avoid seconds and tritones.
+generates both selected TB slots together. Each TB keeps its own selected length, such as
+8 steps on A and 16 on B. They share the clicked TB's shuffle and tuning and the generator's
+key/scale. TB A is a bass call; TB B answers in a higher register. The notes avoid seconds
+and tritones at every meeting over the complete common cycle, including lengths like 7/11.
+If necessary, a bass phase moves to nearby tonic-triad notes to keep that full cycle consonant.
 
 The TBs keep their own envelopes, filter settings and effects. Matching their tune controls
 ensures the generated scales also agree audibly. Turn LINK off to randomize only one TB.
 
 ## TR-808 / TR-909
 
-Choose **Techno / four on the floor** or **Broken**, then set drum density. Kick anchors,
+Choose **Techno**, **IDM** or **Break**, then set drum density. Kick anchors,
 backbeats, hats and percussion are placed in structured rhythms, with random variation.
-909 hits use normal/accent/flam values; its open and closed hats never occupy the same step.
+909 hits use normal/accent/flam values. Open and closed hats are independently editable.
 Each machine's selected slot is independent; LINK affects the TBs only.
 
 ## Undo Random

@@ -126,8 +126,11 @@ fn st(x: f64) -> f32 {
 /// A TR-808.
 #[derive(Debug, Clone)]
 pub struct Tr808 {
+    independent_hats: bool,
     /// Optional sidechain event bookkeeping; independent of the original DSP state.
     kicks: u64,
+    /// Logical instrument hits, indexed by the native pattern column (0 is accent).
+    triggers: [u64; 12],
     /// `+4` (CDevice): the tick of the bar the pattern started at (song mode).
     pub pat_start: i32,
     /// `+0x30`: the pattern-mode parameter copy.
@@ -182,7 +185,9 @@ impl Tr808 {
             p[1] = 16;
         }
         Tr808 {
+            independent_hats: false,
             kicks: 0,
+            triggers: [0; 12],
             pat_start: 0,
             params: DEFAULT_PARAMS,
             patterns,
@@ -226,6 +231,9 @@ impl Tr808 {
     /// Instrument `i` (`sub_10027894`, cases 1..11).
     fn trigger(&mut self, i: usize) {
         let lv = self.live;
+        if (1..12).contains(&i) {
+            self.triggers[i] = self.triggers[i].wrapping_add(1);
+        }
         if i == BD && lv[BD_LEVEL] != 0 {
             self.kicks = self.kicks.wrapping_add(1);
         }
@@ -271,8 +279,10 @@ impl Tr808 {
                 let g = st(self.level(((2 * lv[CH_LEVEL] as i32) / 3) as u8, LEVEL_SCALE));
                 let s = self.sample(slot::CH);
                 self.simple[SIMPLE_CH].trigger(s, g, NO_DECAY, 0);
-                for v in &mut self.simple {
-                    v.set_hold(0);
+                for (i, v) in self.simple.iter_mut().enumerate() {
+                    if !self.independent_hats || i != SIMPLE_OH {
+                        v.set_hold(0);
+                    }
                 }
             }
             _ => {}
@@ -509,6 +519,12 @@ impl SongDevice for Tr808 {
 }
 
 impl ChannelDevice for Tr808 {
+    fn drum_trigger_count(&self, voice: usize) -> u64 {
+        self.triggers.get(voice).copied().unwrap_or(0)
+    }
+    fn set_independent_hats(&mut self, independent: bool) {
+        self.independent_hats = independent;
+    }
     fn kick_count(&self) -> u64 {
         self.kicks
     }

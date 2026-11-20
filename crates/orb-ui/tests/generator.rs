@@ -6,7 +6,7 @@ use eframe::egui::{self, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, 
 use orb_engine::tables::Tables;
 use orb_player::{Audio, CALL_FRAMES};
 use orb_ui::app::App;
-use orb_ui::generator::{DrumStyle, Options, Scale, drum_pattern, tb_pair};
+use orb_ui::generator::{DrumStyle, Options, Scale, drum_pattern, tb_pair, tb_pair_lengths};
 use orb_ui::link::Link;
 use orb_ui::model::Panel;
 
@@ -19,12 +19,14 @@ fn every_key_scale_and_length_stays_in_key_with_valid_gates_and_consonant_overla
     for root in 0..12 {
         for scale in Scale::ALL {
             for length in 1..=16 {
-                for seed in 0..8 {
+                for trial in 0..24 {
                     let o = Options {
                         root,
                         scale,
+                        drum_style: DrumStyle::ALL[trial % 3],
                         ..Options::default()
                     };
+                    let seed = (trial / 3) as u64;
                     let pair = tb_pair(&o, length, seed);
                     for bytes in &pair {
                         assert_eq!(bytes.len(), 98);
@@ -132,7 +134,7 @@ fn linked_lines_have_answers_in_the_gaps_rather_than_duplicate_rhythms() {
 #[test]
 fn both_drum_machines_respect_lengths_velocities_and_hat_choking() {
     for is808 in [true, false] {
-        for style in [DrumStyle::Techno, DrumStyle::Broken] {
+        for style in DrumStyle::ALL {
             for length in 1..=16 {
                 for seed in 0..32 {
                     let o = Options {
@@ -163,6 +165,53 @@ fn both_drum_machines_respect_lengths_velocities_and_hat_choking() {
             ..Options::default()
         };
         assert!(drum_pattern(&o, is808, 16, 1)[2..].iter().all(|&v| v == 0));
+    }
+}
+
+#[test]
+fn genres_have_distinct_pulses_and_accents_have_true_zero_and_full_extremes() {
+    let mut quarter_share = [0usize; 3];
+    let mut totals = [0usize; 3];
+    for (style_index, style) in DrumStyle::ALL.into_iter().enumerate() {
+        for seed in 0..256 {
+            let o = Options {
+                drum_style: style,
+                drum_density: 48,
+                ..Options::default()
+            };
+            let bytes = drum_pattern(&o, false, 16, seed);
+            for s in 0..16 {
+                if bytes[2 + s * 12 + 1] > 0 {
+                    totals[style_index] += 1;
+                    quarter_share[style_index] += usize::from(s % 4 == 0);
+                }
+            }
+            if style == DrumStyle::Break {
+                for s in [4, 12] {
+                    assert_eq!(bytes[2 + s * 12 + 2], 2);
+                }
+            }
+            for accents in [0, 100] {
+                for is808 in [true, false] {
+                    let o = Options {
+                        accents,
+                        ..o.clone()
+                    };
+                    let bytes = drum_pattern(&o, is808, 16, seed);
+                    for step in bytes[2..].as_chunks::<12>().0 {
+                        if accents == 0 {
+                            assert_eq!(step[0], 0);
+                        } else if step[1..].iter().any(|&v| v > 0) {
+                            assert!(step[0] > 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(quarter_share[0] as f64 / totals[0] as f64 > 0.85);
+    for i in [1, 2] {
+        assert!(quarter_share[i] as f64 / (totals[i] as f64) < 0.6);
     }
 }
 
@@ -219,7 +268,7 @@ fn a_last_slot_generation_reaches_the_engine_saves_and_undo_restores_the_exact_p
 }
 
 #[test]
-fn linked_generation_uses_the_clicked_length_and_tuning_and_undo_restores_both() {
+fn linked_generation_keeps_each_length_shares_tuning_and_undo_restores_both() {
     let (mut app, mut audio) = app();
     app.panel.set_pattern_length(0, 11);
     app.panel.set_pattern_length(1, 7);
@@ -230,7 +279,7 @@ fn linked_generation_uses_the_clicked_length_and_tuning_and_undo_restores_both()
     let before = app.link.as_ref().unwrap().patterns().clone();
     app.generator.options.link_tb = true;
     app.random_pattern_with_seed(1, 999);
-    assert_eq!(app.panel.rows[0].len[0], 7);
+    assert_eq!(app.panel.rows[0].len[0], 11);
     assert_eq!(app.panel.rows[1].len[0], 7);
     assert!(app.panel.rows[0].shuffle[0] && app.panel.rows[1].shuffle[0]);
     assert_eq!(app.panel.knob("tb303_1.tune"), 650);
@@ -249,6 +298,150 @@ fn linked_generation_uses_the_clicked_length_and_tuning_and_undo_restores_both()
     assert_eq!(app.link.as_ref().unwrap().patterns(), &before);
     assert_eq!(app.panel.knob("tb303_1.tune"), 350);
     assert_eq!(app.panel.knob("tb303_2.tune"), 650);
+}
+
+#[test]
+fn linked_polymeters_stay_harmonic_over_the_whole_common_cycle() {
+    for lengths in [[8, 16], [16, 8], [7, 11], [11, 7]] {
+        let [a_len, b_len] = lengths.map(usize::from);
+        let common = (1..=a_len * b_len)
+            .find(|n| n % a_len == 0 && n % b_len == 0)
+            .unwrap();
+        for style in DrumStyle::ALL {
+            for root in 0..12 {
+                for scale in Scale::ALL {
+                    for seed in 0..4 {
+                        let o = Options {
+                            root,
+                            scale,
+                            drum_style: style,
+                            ..Options::default()
+                        };
+                        let pair = tb_pair_lengths(&o, lengths, seed);
+                        assert_eq!([pair[0][1], pair[1][1]], lengths);
+                        for (row, bytes) in pair.iter().enumerate() {
+                            for s in 0..16 {
+                                let b = &bytes[2 + s * 6..8 + s * 6];
+                                assert!(b[0] < 12 && b[1..].iter().all(|&v| v < 2));
+                                assert!(!(b[3] != 0 && b[4] != 0));
+                                if s >= usize::from(lengths[row]) {
+                                    assert_eq!(b, &[0, 0, 0, 0, 0, 1]);
+                                }
+                                if b[5] == 0 {
+                                    let relative =
+                                        (semitone(b) - i32::from(root)).rem_euclid(12) as u8;
+                                    assert!(scale.intervals().contains(&relative));
+                                    assert!((-12..=23).contains(&semitone(b)));
+                                } else {
+                                    assert_eq!((b[1], b[2]), (0, 0));
+                                }
+                                if b[1] != 0 {
+                                    let next = (s + 1) % usize::from(lengths[row]);
+                                    assert_eq!(bytes[2 + next * 6 + 5], 0);
+                                }
+                            }
+                        }
+                        for time in 0..common {
+                            let a = &pair[0][2 + (time % a_len) * 6..8 + (time % a_len) * 6];
+                            let b = &pair[1][2 + (time % b_len) * 6..8 + (time % b_len) * 6];
+                            if a[5] == 0 && b[5] == 0 {
+                                assert!(matches!(
+                                    (semitone(b) - semitone(a)).rem_euclid(12),
+                                    0 | 3 | 4 | 5 | 7 | 8 | 9
+                                ));
+                            }
+                        }
+                        assert_eq!(tb_pair_lengths(&o, lengths, seed), pair);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn linked_polymeters_respect_density_accent_and_slide_extremes() {
+    for style in DrumStyle::ALL {
+        for lengths in [[8, 16], [16, 8], [7, 11]] {
+            for density in [0, 100] {
+                for flags in [0, 100] {
+                    let o = Options {
+                        density,
+                        accents: flags,
+                        slides: flags,
+                        drum_style: style,
+                        ..Options::default()
+                    };
+                    let pair = tb_pair_lengths(&o, lengths, 483);
+                    for (row, bytes) in pair.iter().enumerate() {
+                        for s in 0..usize::from(lengths[row]) {
+                            let b = &bytes[2 + s * 6..8 + s * 6];
+                            if density == 0 {
+                                assert_eq!(b[5], 1);
+                            } else if row == 0 {
+                                assert_eq!(b[5], 0);
+                            }
+                            if b[5] == 0 {
+                                assert_eq!(b[2], u8::from(flags != 0));
+                            }
+                            if flags == 0 {
+                                assert_eq!(b[1], 0);
+                            } else {
+                                let next = (s + 1) % usize::from(lengths[row]);
+                                let adjacent = b[5] == 0 && bytes[2 + next * 6 + 5] == 0;
+                                assert_eq!(b[1], u8::from(adjacent));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let o = Options::default();
+    for length in 1..=16 {
+        assert_eq!(
+            tb_pair_lengths(&o, [length; 2], 77),
+            tb_pair(&o, length, 77)
+        );
+    }
+}
+
+#[test]
+fn linked_random_from_either_tb_preserves_both_periods_in_audio_save_and_undo() {
+    for lengths in [[8, 16], [16, 8], [7, 11], [11, 7]] {
+        for clicked in 0..2 {
+            let (mut app, mut audio) = app();
+            for (row, length) in lengths.into_iter().enumerate() {
+                app.panel.set_pattern_length(row, length);
+            }
+            app.link.as_mut().unwrap().sync(&mut app.panel);
+            let before = app.link.as_ref().unwrap().patterns().clone();
+            app.generator.options.link_tb = true;
+            app.generator.options.root = 5;
+            app.generator.options.scale = Scale::Dorian;
+            app.random_pattern_with_seed(clicked, 409);
+            assert_eq!(
+                [app.panel.rows[0].len[0], app.panel.rows[1].len[0]],
+                lengths
+            );
+            calls(&mut audio);
+            for (row, length) in lengths.into_iter().enumerate() {
+                let actual = audio.current_mut().frame.devices.channels[row]
+                    .patterns_mut()
+                    .unwrap();
+                assert_eq!(actual[1], length);
+            }
+            let saved = rbs::Song::parse(&app.song_bytes().unwrap()).unwrap();
+            assert_eq!(saved.tb303[0].patterns[0].length, lengths[0]);
+            assert_eq!(saved.tb303[1].patterns[0].length, lengths[1]);
+            assert!(app.undo_random());
+            assert_eq!(app.link.as_ref().unwrap().patterns(), &before);
+            assert_eq!(
+                [app.panel.rows[0].len[0], app.panel.rows[1].len[0]],
+                lengths
+            );
+        }
+    }
 }
 
 #[test]

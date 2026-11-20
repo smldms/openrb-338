@@ -161,6 +161,7 @@ struct Entry {
 }
 
 pub struct Browser {
+    studio: bool,
     mode: Mode,
     dir: PathBuf,
     path_text: String,
@@ -202,6 +203,7 @@ impl Browser {
             .cloned()
             .unwrap_or_else(settings::documents_dir);
         let mut b = Self {
+            studio: false,
             mode,
             dir: dir.clone(),
             path_text: String::new(),
@@ -235,6 +237,13 @@ impl Browser {
 
     /// The suggested file name of a writing mode ("song.rbs"); an export takes the format from
     /// its extension.
+    pub fn with_studio(mut self) -> Self {
+        self.studio = true;
+        self.name = "song.orb338".into();
+        self.reload();
+        self
+    }
+
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
         if let Some(f) =
@@ -298,7 +307,9 @@ impl Browser {
     /// The extensions the mode lists (lowercase).
     fn extensions(&self) -> Vec<&'static str> {
         match self.mode {
-            Mode::OpenSong | Mode::SaveSong => vec!["rbs"],
+            Mode::OpenSong => vec!["rbs", "orb338"],
+            Mode::SaveSong if self.studio => vec!["orb338"],
+            Mode::SaveSong => vec!["rbs"],
             Mode::Export => vec![self.format.extension()],
             Mode::ChooseMod => vec!["rbm"],
         }
@@ -444,7 +455,8 @@ impl Browser {
             self.finish(p, settings)
         } else if p.is_file() {
             self.error = Some(format!(
-                "{text} is a file; type its name in the Name field, or enter a folder here."
+                "{text} is a file; type its name in the Name field, or enter \
+            a folder here."
             ));
             Poll::Open
         } else {
@@ -487,7 +499,12 @@ impl Browser {
         let ext = Path::new(name).extension().and_then(|e| e.to_str());
         let name = match self.mode {
             Mode::SaveSong => {
-                if ext.is_some_and(|e| e.eq_ignore_ascii_case("rbs")) {
+                if self.studio {
+                    return Ok(self.dir.join(Path::new(name).with_extension("orb338")));
+                }
+                if ext.is_some_and(|e| {
+                    e.eq_ignore_ascii_case("rbs") || e.eq_ignore_ascii_case("orb338")
+                }) {
                     name.to_string()
                 } else {
                     format!("{name}.rbs")

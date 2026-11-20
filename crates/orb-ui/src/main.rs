@@ -53,12 +53,13 @@ use orb_ui::session;
 use orb_ui::settings::Settings;
 
 /// The visible help: only the song. The developer options are hidden (task-137).
-const USAGE: &str = "usage: OpenRB-338 [SONG]\n\
-                     SONG is a ReBirth song (.rbs, RBS 4.x or ReBirth 1.x) to open";
+const USAGE: &str = "usage: ACID-RECALL [SONG]\n\
+                     SONG is a ReBirth song (.rbs) or a Studio project (.orb338) to open";
 
 /// The command line, parsed.
 #[derive(Debug, PartialEq)]
 struct Args {
+    studio_view: Option<String>,
     demo: bool,
     about: bool,
     info: bool,
@@ -96,6 +97,7 @@ enum Exit {
 /// Parses the arguments after the program name. `-psn_...` (Finder on old macOS) is ignored.
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, Exit> {
     let mut r = Args {
+        studio_view: None,
         demo: false,
         about: false,
         info: false,
@@ -116,6 +118,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, Exit> {
             "--about" => r.about = true,
             "--info" => r.info = true,
             "--play" => r.play = true,
+            "--studio-view" => {
+                r.studio_view = Some(match args.next().as_deref() {
+                    Some("sampler") => "sampler".into(),
+                    Some("space") => "space".into(),
+                    Some("warp") => "warp".into(),
+                    _ => return Err(Exit::Bad),
+                });
+            }
             "--debug-panic" => r.debug_panic = Some(DebugPanic::Start),
             "--debug-panic-window" => r.debug_panic = Some(DebugPanic::Window),
             "--debug-panic-thread" => r.debug_panic = Some(DebugPanic::Thread),
@@ -159,7 +169,6 @@ fn usage(e: Exit) -> ! {
         }
     }
 }
-
 /// Gives a GUI-subsystem process the console of the program that started it (task-111).
 ///
 /// Such a process has no console, so `eprintln!` (the usage text, a song that does not open, the
@@ -206,6 +215,7 @@ fn main() -> eframe::Result {
     // before anything that can panic: a panic writes a crash log and shows a box (task-157)
     orb_ui::crash::install(orb_ui::about::VERSION);
     let Args {
+        studio_view,
         demo,
         about,
         info,
@@ -236,7 +246,11 @@ fn main() -> eframe::Result {
         app_samples = samples.clone();
         let (l, audio) = Link::new(Arc::new(Tables::new()), samples.clone());
         // The song named on the command line is opened by the app (with its mod).
-        if let Some(path) = &song {
+        if let Some(path) = &song
+            && !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("orb338"))
+        {
             match session::open_song(path) {
                 Ok(o) => startup = Some((path.clone(), o)),
                 // the app starts on the new song, with the error in its message box
@@ -263,20 +277,20 @@ fn main() -> eframe::Result {
 
     // The window starts maximized; an explicit --size opens at that size instead.
     let viewport = egui::ViewportBuilder::default()
-        .with_title("OpenRB-338")
+        .with_title(orb_ui::about::NAME)
         .with_app_id("OpenRB-338")
         .with_icon(Arc::new(orb_ui::art::app_icon(256)))
         // the menu bar is above the panel
         .with_inner_size([size[0], size[1] + MENU_H])
-        // The minimum is half the native panel size (decision task-040).
-        .with_min_inner_size([PANEL_W / 2.0, PANEL_H / 2.0 + MENU_H])
+        // Keep native rack controls readable when the window is restored from maximized.
+        .with_min_inner_size([1000.0, 650.0 + MENU_H])
         .with_maximized(!sized);
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
     };
     eframe::run_native(
-        "OpenRB-338",
+        orb_ui::about::NAME,
         options,
         Box::new(move |cc| {
             // always dark, whatever the system theme (task-127; `App::show` keeps it)
@@ -312,17 +326,61 @@ fn main() -> eframe::Result {
             app.samples = app_samples;
             app.audio_health = audio_health;
             app.menu = true;
+            app.studio.modern = true;
+            if demo {
+                let frames = (0..88200)
+                    .map(|i| {
+                        let t = i as f32 / 44100.0;
+                        let envelope = (t * 5.0).sin().abs();
+                        let value = (t * 900.0).sin() * envelope * 0.5;
+                        [value, value]
+                    })
+                    .collect();
+                app.studio.waves[0] =
+                    Some(Arc::new(orb_engine::studio::audio_file::Wave { frames }));
+                app.studio.names[0] = "Demo waveform".into();
+                app.panel.sampler_playheads[0] = Some(orb_engine::studio::sampler::Playhead {
+                    source: 0.4,
+                    musical: 0.4,
+                });
+                for step in [0, 4, 8, 12] {
+                    app.studio.settings.lanes[0].steps[step] = 100;
+                }
+            }
             app.enable_logo_anim();
             app.settings = Settings::load();
             // the song (or the new empty song) and its mod's startup sound; nothing in the demo,
             // which has no player
             // (the errors of the start are one box)
             app.action(|app| {
-                app.start(startup);
+                if !demo {
+                    app.start(startup);
+                }
+                if let Some(path) = &song
+                    && path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("orb338"))
+                {
+                    app.open_now(path);
+                }
                 for e in start_errors {
                     app.fail(e);
                 }
             });
+            if let Some(view) = studio_view {
+                app.studio.sampler_open = view == "sampler";
+                app.studio.reverb_open = view == "space";
+                if view == "warp" {
+                    app.studio.warp_editor = Some(0);
+                    if demo {
+                        let lane = &mut app.studio.settings.lanes[0];
+                        lane.warp = true;
+                        lane.warp_grid = true;
+                        app.panel.sampler_playheads[0].as_mut().unwrap().musical = 0.5;
+                        let _ = lane.warp_markers.insert(0.5, 0.625, 0.0, 1.0);
+                    }
+                }
+            }
             if let Some(mode) = browse {
                 app.open_browser(mode);
             }

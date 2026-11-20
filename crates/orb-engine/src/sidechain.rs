@@ -1,4 +1,4 @@
-//! Optional kick-triggered TB ducking. Disabled by default; not part of the RBS format.
+//! Optional TR-triggered TB ducking. Disabled by default; not part of the RBS format.
 //! Trigger bookkeeping never changes the original instruments' DSP or sequencing.
 
 use crate::frame::BLOCK;
@@ -15,6 +15,8 @@ pub enum Source {
 pub struct Config {
     pub enabled: bool,
     pub source: Source,
+    /// Native TR pattern column, 1 (BD) through 11.
+    pub instrument: u8,
     /// Gain reduction at the deepest point, in percent, independently for each TB.
     pub depth: [u8; 2],
     pub release_ms: u16,
@@ -25,6 +27,7 @@ impl Default for Config {
         Self {
             enabled: false,
             source: Source::Both,
+            instrument: 1,
             depth: [55, 55],
             release_ms: 180,
         }
@@ -33,9 +36,16 @@ impl Default for Config {
 
 impl Config {
     pub fn sanitized(mut self) -> Self {
+        self.instrument = self.instrument.clamp(1, 11);
         self.depth = self.depth.map(|d| d.min(100));
         self.release_ms = self.release_ms.clamp(20, 1000);
         self
+    }
+
+    /// Select cumulative voice counters; source filtering remains in `Ducker::gains`.
+    pub fn trigger_counts(&self, counts: [[u64; 12]; 2]) -> [u64; 2] {
+        let instrument = usize::from(self.instrument.clamp(1, 11));
+        counts.map(|machine| machine[instrument])
     }
 }
 
@@ -48,6 +58,7 @@ const SLEW: f64 = 1.0 / 88.0; // 2 ms maximum transition for bypass and depth ch
 pub struct Ducker {
     config: Config,
     seen: [u64; 2],
+    seen_voices: [[u64; 12]; 2],
     phase: u32,
     start: f64,
     envelope: f64,
@@ -59,6 +70,7 @@ impl Default for Ducker {
         Self {
             config: Config::default(),
             seen: [0; 2],
+            seen_voices: [[0; 12]; 2],
             phase: u32::MAX,
             start: 0.0,
             envelope: 0.0,
@@ -81,7 +93,19 @@ impl Ducker {
             .map(|g| ((1.0 - g) * 100.0).round().clamp(0.0, 100.0) as u8)
     }
 
-    /// One block, with trigger counts sampled after the sequencer ran. No allocation or lock.
+    /// Track every voice so changing the selected instrument never replays an older hit.
+    pub fn gains_for_voices(
+        &mut self,
+        counts: [[u64; 12]; 2],
+        audible: [bool; 2],
+    ) -> [[f32; BLOCK]; 2] {
+        self.seen = self.config.trigger_counts(self.seen_voices);
+        self.seen_voices = counts;
+        self.gains(self.config.trigger_counts(counts), audible)
+    }
+
+    /// One block, with selected trigger counts sampled after the sequencer ran.
+    /// No allocation or lock. `gains_for_voices` additionally handles live voice changes.
     pub fn gains(&mut self, kicks: [u64; 2], audible: [bool; 2]) -> [[f32; BLOCK]; 2] {
         let changed = [
             kicks[0] != self.seen[0] && audible[0],

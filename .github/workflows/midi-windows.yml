@@ -2,7 +2,7 @@ name: MIDI Windows preview
 
 on:
   push:
-    branches: [feat/uc33-midi-input]
+    branches: [feat/uc33-midi-input, feat/studio-v2]
   workflow_dispatch:
 
 permissions:
@@ -18,6 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          cache-on-failure: true
       - name: Install formatting toolchain
         run: rustup toolchain install nightly-2026-10-18 --profile minimal --component rustfmt
       - name: Format check (print any required patch)
@@ -28,7 +30,7 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
-        run: cargo test --locked -p orb-ui --lib --test sidechain --test theme --test arpeggiator --test generator --test midi_preset --test midi --test settings --test wired --test repaint
+        run: cargo test --locked -p orb-ui --lib --test sidechain --test theme --test arpeggiator --test generator --test midi_preset --test midi --test midi_caps --test midi_clock --test settings --test wired --test repaint --test menu
       - name: Engine and sidechain regression tests
         run: cargo test --locked -p orb-engine
       - name: Check default skin and render preview
@@ -39,37 +41,155 @@ jobs:
           cargo run --locked -p orb-ui-art -- graphite graphite-preview
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Output ('GRAPHITE_PREVIEW:' + [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PWD 'graphite-preview/panel.png'))))
-      - name: Audio callback allocation guard
-        run: cargo test --locked -p orb-player --test no_alloc
+      - name: Audio callback allocation and MIDI Clock guards
+        run: cargo test --locked -p orb-player --lib --test no_alloc --test midi_clock
+      - name: Studio release performance
+        run: |
+          cargo test --release --locked -p orb-engine studio::tests::release_ -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --release --locked -p orb-engine release_time_warp_32_voice_performance -- --nocapture
       - name: Portable Windows build
         run: cargo build --release --locked -p orb-ui
       - name: Capture the desktop interface
         shell: pwsh
         run: |
           $previewPath = Join-Path $PWD 'graphite-preview/desktop.png'
-          $process = Start-Process -FilePath target/release/OpenRB-338.exe -WindowStyle Hidden -PassThru -ArgumentList @('--demo', '--size', '936x765', '--screenshot', $previewPath)
+          $process = Start-Process -FilePath target/release/OpenRB-338.exe -WindowStyle Hidden -PassThru -ArgumentList @('--demo', '--size', '1600x1000', '--ppp', '0.6', '--screenshot', $previewPath)
           if (-not $process.WaitForExit(45000)) { Stop-Process -Id $process.Id }
           if (Test-Path -LiteralPath $previewPath) {
             Write-Output ('GRAPHITE_APP_PREVIEW:' + [Convert]::ToBase64String([IO.File]::ReadAllBytes($previewPath)))
           } else {
             Write-Output 'Desktop screenshot unavailable on this runner; vector preview is included.'
           }
+          foreach ($studioView in @('sampler', 'space')) {
+            $studioPreviewPath = Join-Path $PWD ('graphite-preview/' + $studioView + '.png')
+            $studioProcess = Start-Process -FilePath target/release/OpenRB-338.exe -WindowStyle Hidden -PassThru -ArgumentList @('--demo', '--size', '1600x1000', '--ppp', '0.6', '--studio-view', $studioView, '--screenshot', $studioPreviewPath)
+            if (-not $studioProcess.WaitForExit(45000)) { Stop-Process -Id $studioProcess.Id }
+            if (Test-Path -LiteralPath $studioPreviewPath) {
+              Write-Output ('STUDIO_' + $studioView.ToUpper() + '_PREVIEW:' + [Convert]::ToBase64String([IO.File]::ReadAllBytes($studioPreviewPath)))
+            }
+          }
       - name: Prepare preview
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path midi-preview
-          Copy-Item target/release/OpenRB-338.exe midi-preview/
+          Copy-Item target/release/OpenRB-338.exe midi-preview/ACID-RECALL.exe
+          New-Item -ItemType Directory -Force -Path midi-preview/docs,midi-preview/assets/brand
+          Copy-Item docs/acid-recall.md,docs/studio.md midi-preview/docs/
+          Copy-Item assets/brand/acid-recall.png,assets/brand/acid-recall.ico midi-preview/assets/brand/
           Copy-Item LICENSE midi-preview/
           Copy-Item docs/midi-controller.md midi-preview/README-MIDI.md
+          Copy-Item docs/midi-clock.md midi-preview/README-MIDI-CLOCK.md
           Copy-Item docs/pattern-generator.md midi-preview/README-RANDOM.md
           Copy-Item docs/arpeggiator.md midi-preview/README-ARP.md
           Copy-Item graphite-preview/panel.png midi-preview/Graphite-preview.png
           Copy-Item docs/graphite.md midi-preview/README-GRAPHITE.md
           Copy-Item docs/sidechain.md midi-preview/README-SIDECHAIN.md
+          Copy-Item docs/studio.md midi-preview/README-STUDIO.md
+          Copy-Item docs/LICENSE-SYMPHONIA.txt midi-preview/LICENSE-SYMPHONIA.txt
+          foreach ($studioView in @('sampler', 'space')) {
+            $studioPreviewPath = 'graphite-preview/' + $studioView + '.png'
+            if (Test-Path -LiteralPath $studioPreviewPath) { Copy-Item -LiteralPath $studioPreviewPath -Destination midi-preview/ }
+          }
           if (Test-Path graphite-preview/desktop.png) { Copy-Item graphite-preview/desktop.png midi-preview/Graphite-desktop.png }
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenRB-338-UC33-MIDI-Windows-x64
+          name: ACID-RECALL-Windows-x64
           path: midi-preview/
           if-no-files-found: error
           retention-days: 30
+
+  publish-preview:
+    name: Publish public Windows download
+    needs: windows
+    if: github.ref == 'refs/heads/feat/studio-v2'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: acid-recall-public-windows-preview
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ACID-RECALL-Windows-x64
+          path: midi-preview
+      - name: Publish portable ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd midi-preview && zip -r ../ACID-RECALL-Windows-x64.zip .)
+          cat > release-notes.md <<EOF
+          # ACID RECALL — Windows preview
+
+          **[Visit the ACID RECALL website](https://acid-recall.netlify.app/)**
+
+          Download **ACID-RECALL-Windows-x64.zip**, extract it and run **ACID-RECALL.exe**.
+          No installer or GitHub account is required to download the ZIP.
+
+          Includes MIDI Learn, multiple controller inputs, MIDI Clock **MASTER / OUT** and
+          **SLAVE / IN**, Start/Continue/Stop, Song Position Pointer, sampler TIME WARP,
+          arpeggiators, pattern generators, sidechain and convolution reverb.
+
+          MIDI Clock is available under **MIDI > MIDI CLOCK / SYNC**. This is a preview:
+          hardware timing still needs testing on real interfaces and external machines.
+
+          ## Latest changes — 20 November 2026
+
+          - **Sampler Undo / Redo:** undo settings, sequences, WARP anchors and sample
+            loading/unloading. Buttons and Ctrl/Cmd+Z / Shift+Z / Ctrl+Y are available.
+          - **Unload by right-click:** right-click a sample name and choose Unload sample.
+          - **WARP assistance:** acid-green anchors, a white playhead and optional
+            ANALYZE BPM / TRANSIENTS previews. Review Est. BPM with ÷2 / ×2, then use
+            USE ~N BEATS to confirm a beat fit. APPLY SUGGESTIONS adds anchors only on
+            request, preserving existing anchors and their timing.
+          - **Fixed Graphite interface:** the obsolete Mods menu is hidden in Studio.
+
+          - **Sampler playheads:** live source heads on the rack and detailed editor,
+            plus a musical-time head on the WARP grid. Includes audition, reverse and loops.
+          - **More knobs:** Delay Steps and per-sample Pitch, Level and Reverb now use
+            knobs with Shift fine adjustment. Existing MIDI assignments remain valid.
+          - **Delay timing on the rack:** STEPS (1–32) and STRAIGHT / TRIPLET, with MIDI
+            Learn. The detailed editor's unresponsive step controls are fixed.
+          - **Sampler WARP:** fit IN/OUT to the chosen Beats. MARKERS / GRID provides
+            numbered bars, beats and sixteenths, 16 local stretch anchors, snap/free
+            placement and 16× waveform zoom. Anchors save in portable projects.
+            Beat count can be entered manually or confirmed from the optional BPM estimate.
+          - **Easier MIDI Learn:** right-click a rack control, choose **MIDI LEARN...** and
+            move your controller. Right-click again to remove its assignment or choose a
+            personal **MAX (0–127)** for each continuous control. The full physical fader
+            travel reaches that maximum; no per-assignment MIN is needed.
+          - **TR output trims:** both TRs default to **0 dB**, removing the automatic +6 dB
+            808 boost. Smoothed TRIM controls span −12 to +12 dB and follow insert effects
+            to preserve their drive and tone. Use the **0 dB** buttons to reset trims saved
+            by earlier previews; existing project values are preserved.
+          - **Updated help:** the ZIP includes a MIDI Learn quick start and TR balance
+            instructions in README-MIDI.md and README-STUDIO.md.
+
+          New Clock OUT settings default to 30 ms; Clock IN has a signed phase offset.
+
+          Machine power and effect ON/OFF/routing buttons now follow absolute 0/127 CC
+          states like the sampler. Its MIX strip now matches the four original machines,
+          with the same compact fader, green ten-segment meter and control alignment.
+
+          Thanks to **[MATTH23D (@matth23d)](https://x.com/matth23d)** for restoring the
+          Evolution UC-33e that inspired this project.
+
+          This rolling preview is updated after successful Studio Windows builds.
+          Build source: https://github.com/${GH_REPO}/commit/${BUILD_SHA}
+          EOF
+          if gh release view windows-preview > /dev/null 2>&1; then
+            gh release upload windows-preview ACID-RECALL-Windows-x64.zip --clobber
+            gh api --method PATCH "repos/${GH_REPO}/git/refs/tags/windows-preview" \
+              -f "sha=${BUILD_SHA}" -F force=true > /dev/null
+            gh release edit windows-preview --title "ACID RECALL — Windows preview" \
+              --prerelease --notes-file release-notes.md
+          else
+            gh release create windows-preview ACID-RECALL-Windows-x64.zip \
+              --target "${BUILD_SHA}" --title "ACID RECALL — Windows preview" \
+              --prerelease --notes-file release-notes.md
+          fi

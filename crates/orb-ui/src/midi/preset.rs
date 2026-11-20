@@ -1,12 +1,12 @@
 //! Portable, versioned routing files. Device selection and enable state remain local.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Binding, Config, kind};
+use super::{Binding, Config, Kind, ValueRange, kind};
 
 const FORMAT: &str = "openrb-midi-routing";
 const VERSION: u32 = 1;
@@ -19,6 +19,8 @@ pub struct RoutingPreset {
     version: u32,
     pickup: bool,
     bindings: Vec<Binding>,
+    #[serde(default)]
+    ranges: BTreeMap<String, ValueRange>,
 }
 
 impl RoutingPreset {
@@ -28,6 +30,7 @@ impl RoutingPreset {
             version: VERSION,
             pickup: config.pickup,
             bindings: config.bindings.clone(),
+            ranges: config.ranges.clone(),
         }
     }
 
@@ -40,14 +43,24 @@ impl RoutingPreset {
         }
         let mut sources = HashSet::new();
         let mut targets = HashSet::new();
+        for (id, range) in &self.ranges {
+            if range.max > 127
+                || !matches!(kind(id), Some(Kind::Knob | Kind::Fader | Kind::Number))
+                || !self.bindings.iter().any(|b| &b.target == id)
+            {
+                return Err(format!("Invalid MIDI output range for {id}."));
+            }
+        }
         for b in &self.bindings {
-            if !(1..=16).contains(&b.channel) || b.controller > 127 {
+            if b.input >= 16 || !(1..=16).contains(&b.channel) || b.controller > 127 {
                 return Err("A MIDI channel or CC number in the file is invalid.".into());
             }
             if kind(&b.target).is_none() {
                 return Err(format!("Unknown MIDI target: {}", b.target));
             }
-            if !sources.insert((b.channel, b.controller)) || !targets.insert(b.target.as_str()) {
+            if !sources.insert((b.input, b.channel, b.controller))
+                || !targets.insert(b.target.as_str())
+            {
                 return Err("The file contains conflicting MIDI assignments.".into());
             }
         }
@@ -73,6 +86,7 @@ impl RoutingPreset {
     pub fn apply(&self, config: &mut Config) -> Result<usize, String> {
         self.validate()?;
         config.bindings.clone_from(&self.bindings);
+        config.ranges.clone_from(&self.ranges);
         config.pickup = self.pickup;
         Ok(self.bindings.len())
     }
